@@ -2,6 +2,7 @@
 # Module 4：整理 DataFrame，輸出 CSV 與 Excel
 
 import os
+import re
 import pandas as pd
 from datetime import datetime
 
@@ -13,6 +14,11 @@ OUTPUT_COLS = [
 ]
 RISK_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 
+def clean_excel_string(val):
+    """移除 Excel 不支援的控制字元 (如 \x00-\x08, \x0b, \x0c, \x0e-\x1f)"""
+    if isinstance(val, str):
+        return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', val)
+    return val
 
 def save_results(results: list[dict], prefix: str = "gap_analysis") -> str:
     """
@@ -24,6 +30,9 @@ def save_results(results: list[dict], prefix: str = "gap_analysis") -> str:
     base_path = os.path.join(OUTPUT_DIR, f"{prefix}_{timestamp}")
 
     df = pd.DataFrame(results)
+
+    # 關鍵：對所有字串欄位進行清洗
+    df = df.map(clean_excel_string)
 
     # 確保所有欄位存在
     for col in OUTPUT_COLS:

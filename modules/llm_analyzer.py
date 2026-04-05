@@ -9,51 +9,81 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from config import SCREENING_MODEL, ANALYSIS_MODEL, TARGET_PRODUCT, USE_LLM
-
+from config import (
+    SCREENING_MODEL, ANALYSIS_MODEL, TARGET_PRODUCT, USE_LLM,
+    TARGET_DRUG, TARGET_ROUTE, TARGET_INDICATION,
+    SCREENING_IRRELEVANT_EXAMPLES,
+    RULE_DRUG_KEYWORDS, RULE_ROUTE_KEYWORDS,
+    RULE_INDICATION_KEYWORDS, RULE_ADDITIONAL_INDICATION_KEYWORDS,
+)
 
 # ── Pydantic Schemas ──────────────────────────────────────────────────────────
 
 class ScreeningResult(BaseModel):
-    """Stage 1：快速初篩，只看摘要。"""
+    """Stage 1：快速初篩，只看 title + abstract。"""
     is_relevant: bool = Field(
-        description="是否與 PDE4 抑制劑、鼻腔給藥或神經/小腦疾病有任何關聯？"
-                    "如果完全無關（例如純 COPD 口服或皮膚科外用），回傳 False。"
+        description=(
+            f"是否與以下任一有任何關聯：\n"
+            f"- 藥物：{TARGET_DRUG}\n"
+            f"- 給藥途徑：{TARGET_ROUTE}\n"
+            f"- 適應症：{TARGET_INDICATION}\n"
+            f"如果完全無關（例如 {SCREENING_IRRELEVANT_EXAMPLES}），回傳 False。"
+        )
     )
     quick_risk: Literal["High", "Medium", "Low"] = Field(
         description=(
             "根據摘要的快速風險評估。\n"
-            "High   = 同時涵蓋 PDE4 + 鼻腔/CNS + 神經/小腦疾病\n"
-            "Medium = 部分重疊（CNS 但非鼻腔，或鼻腔但非 CNS）\n"
+            f"High   = 同時涵蓋 {TARGET_DRUG} + {TARGET_ROUTE} + {TARGET_INDICATION}\n"
+            f"Medium = 部分重疊（有 {TARGET_DRUG} 但無 {TARGET_ROUTE}，\n"
+            f"         或有 {TARGET_INDICATION} 但藥物不同）\n"
             "Low    = 與本案高度無關"
         )
     )
 
-
 class PatentAnalysis(BaseModel):
-    """Stage 2：精讀 claims，完整分析。"""
+    """Stage 2：精讀 claims，完整 FTO 分析。"""
+
     is_target_drug: bool = Field(
-        description="是否明確提及 Roflumilast、PDE4 inhibitor 或其衍生物？"
-    )
-    delivery_routes: list[str] = Field(
-        description="所有出現的給藥途徑。若未提及，回傳 ['Not specified']。"
-    )
-    indications: list[str] = Field(
-        description="所有涉及的適應症或疾病名稱。"
-    )
-    fto_risk: Literal["High", "Medium", "Low"] = Field(
         description=(
-            f"對『{TARGET_PRODUCT}』的 FTO 阻擋風險。\n"
-            "High   = Active 狀態，且 claims 同時涵蓋 PDE4 + 鼻腔/CNS + 神經/小腦疾病\n"
-            "Medium = 部分重疊，或狀態不明\n"
-            "Low    = 與本案高度無關，或已過期"
+            f"Claims 或摘要是否明確提及 {TARGET_DRUG} 或其衍生物、同類藥物？"
         )
     )
-    gap_opportunity: str = Field(
-        description="本專利『未涵蓋』的空白區域，一到兩句說明。"
+
+    # 關鍵改動 1：改為 str 並限制數量，防止 LLM 吐出長列表導致斷頭
+    delivery_routes: str = Field(
+        description=(
+            "列出 claims 中明確出現的給藥途徑（僅限前 3 個，其餘省略）。\n"
+            "例如：'Oral, Nasal, Intravenous'\n"
+            "若未提及，回傳 'Not specified'。"
+        )
     )
+
+    # 關鍵改動 2：改為 str 並限制數量
+    indications: str = Field(
+        description=(
+            "列出涉及的適應症（僅限前 3 個關鍵疾病）。\n"
+            f"若可能涵蓋 {TARGET_INDICATION}，請加註。\n"
+            "例如：'Neurodegenerative disease (may cover SCA), Alzheimer'"
+        )
+    )
+
+    claim_scope: str = Field(
+        description=(
+            "用一句話描述核心保護範圍（50 字以內）。\n"
+            "若使用摘要請加註 (based on abstract)。"
+        )
+    )
+
+    fto_risk: Literal["High", "Medium", "Low"] = Field(
+        description=f"對『{TARGET_PRODUCT}』的 FTO 阻擋風險評等。"
+    )
+
+    gap_opportunity: str = Field(
+        description="一兩句說明本專利『未涵蓋』的空白區域。"
+    )
+
     reasoning: str = Field(
-        description="給出 fto_risk 評分的理由，50 字以內。"
+        description="50 字以內給出評分理由，禁止列出化學式或序列。"
     )
 
 
@@ -61,24 +91,28 @@ class PatentAnalysis(BaseModel):
 
 SCREENING_SYSTEM = f"""你是資深生技醫藥專利分析師。
 我們的目標產品：{TARGET_PRODUCT}
+- 藥物：{TARGET_DRUG}
+- 給藥途徑：{TARGET_ROUTE}
+- 適應症：{TARGET_INDICATION}
 
-請根據摘要快速判斷此專利的相關性，不需要深入分析。
+請根據 title 和 abstract 快速判斷此專利的相關性，不需要深入分析。
 原則：
-- 完全無關的專利（純 COPD 口服、皮膚科外用）直接標記 is_relevant=False
-- 有任何 CNS、鼻腔給藥、PDE4 相關內容都標記 is_relevant=True
+- 完全無關（{SCREENING_IRRELEVANT_EXAMPLES}）→ is_relevant=False
+- 有任何 {TARGET_DRUG}、{TARGET_ROUTE}、{TARGET_INDICATION} 相關 → is_relevant=True
 """
 
 ANALYSIS_SYSTEM = f"""你是資深生技醫藥專利律師，專門評估 FTO（Freedom to Operate）風險。
 
 我們的目標產品：
-- 活性成分：Roflumilast（PDE4 抑制劑）
-- 給藥途徑：鼻噴劑（Nasal spray / Nose-to-brain）
-- 適應症：小腦萎縮症（Spinocerebellar Ataxia, SCA）
+- 活性成分：{TARGET_DRUG}
+- 給藥途徑：{TARGET_ROUTE}
+- 適應症：{TARGET_INDICATION}
 
 分析原則：
-1. 嚴格依據文字，不過度推論（寫 Oral 不等於涵蓋 Nasal）
-2. 廣泛字眼需謹慎（「神經退化性疾病」可能廣義涵蓋 SCA）
-3. 重點分析 Claims，而非僅摘要
+1. 嚴格依據文字，不過度推論
+2. 廣泛字眼需謹慎（可能有同義詞廣義涵蓋 {TARGET_INDICATION}）
+3. 重點分析 independent claim（通常是 claim 1），而非 dependent claims 或僅摘要
+4. 若 claims 為空，以摘要為準並在 reasoning 中標注資料不完整
 """
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -96,8 +130,8 @@ analysis_prompt = ChatPromptTemplate.from_messages([
 # ── Chains（只在 USE_LLM=True 時初始化，避免沒有 API key 時 crash） ──────────
 
 if USE_LLM:
-    screening_llm = ChatOpenAI(model=SCREENING_MODEL, temperature=0)
-    analysis_llm  = ChatOpenAI(model=ANALYSIS_MODEL,  temperature=0)
+    screening_llm = ChatOpenAI(model=SCREENING_MODEL, temperature=0, max_tokens=4000)
+    analysis_llm  = ChatOpenAI(model=ANALYSIS_MODEL,  temperature=0, max_tokens=4000)
     screening_chain = screening_prompt | screening_llm.with_structured_output(ScreeningResult)
     analysis_chain  = analysis_prompt  | analysis_llm.with_structured_output(PatentAnalysis)
 
@@ -128,10 +162,20 @@ def analyze_patent(patent: dict) -> dict:
         }
 
     # Stage 2：精讀（只有 Medium / High 才到這裡）
+    # claims preprocessing
+    raw_claims = patent.get("claims") or ""    
+    if not raw_claims.strip():
+        # 如果沒 Claims，改用 Abstract 頂替
+        claims_input = f"(Claims missing, analysis based on Abstract): {patent.get('abstract', '')}"
+    else:
+        # 截斷至 6000 字元，這對於判斷 Independent Claims (通常在最前面) 非常夠用了
+        # 既省錢又能避免 Context Window 爆炸
+        claims_input = raw_claims[:6000]
+    # llm analysis
     analysis = analysis_chain.invoke({
         "title":    patent.get("title", ""),
         "abstract": patent.get("abstract", ""),
-        "claims":   patent.get("claims", ""),
+        "claims":   claims_input,  # 使用截斷後的字串
         "status":   patent.get("status", "Unknown"),
     })
 
@@ -139,15 +183,6 @@ def analyze_patent(patent: dict) -> dict:
 
 
 # ── 規則評分（免費，不需要 LLM） ─────────────────────────────────────────────
-
-DRUG_KEYWORDS       = ["roflumilast", "pde4", "phosphodiesterase 4", "pde-4"]
-ROUTE_KEYWORDS      = ["nasal", "intranasal", "nose-to-brain", "transmucosal",
-                       "nasal spray", "intranasal spray"]
-INDICATION_KEYWORDS = ["spinocerebellar", "ataxia", "cerebellar", "sca",
-                       "machado-joseph"]
-CNS_KEYWORDS        = ["neurodegenerat", "cerebellum", "purkinje",
-                       "cognitive", "neuroprotect", "central nervous"]
-
 
 def rule_based_analyze(patent: dict) -> dict:
     """
@@ -160,10 +195,10 @@ def rule_based_analyze(patent: dict) -> dict:
         patent.get("claims", ""),
     ]).lower()
 
-    drug_match       = any(k in text for k in DRUG_KEYWORDS)
-    route_match      = any(k in text for k in ROUTE_KEYWORDS)
-    indication_match = any(k in text for k in INDICATION_KEYWORDS)
-    cns_match        = any(k in text for k in CNS_KEYWORDS)
+    drug_match       = any(k in text for k in RULE_DRUG_KEYWORDS)
+    route_match      = any(k in text for k in RULE_ROUTE_KEYWORDS)
+    indication_match = any(k in text for k in RULE_INDICATION_KEYWORDS)
+    cns_match        = any(k in text for k in RULE_ADDITIONAL_INDICATION_KEYWORDS)
 
     score = sum([drug_match, route_match, indication_match, cns_match])
 
@@ -186,13 +221,13 @@ def rule_based_analyze(patent: dict) -> dict:
     return {
         **patent,
         "is_target_drug":   drug_match,
-        "delivery_routes":  ["Nasal"] if route_match else ["Not specified"],
-        "indications":      ["SCA/Ataxia"] if indication_match else [],
+        "delivery_routes":  [TARGET_ROUTE] if route_match else ["Not specified"],
+        "indications":      [TARGET_INDICATION] if indication_match else [],
+        "claim_scope":      "規則評分，未解析 claim scope。",
         "fto_risk":         risk,
         "gap_opportunity":  "規則評分，需人工確認。",
         "reasoning":        f"命中 {score}/4 類關鍵字：{', '.join(matched) if matched else '無'}",
     }
-
 
 # ── 公開入口（根據 USE_LLM 切換） ────────────────────────────────────────────
 
