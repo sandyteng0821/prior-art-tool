@@ -57,3 +57,23 @@ SEARCH_ONLY_GRANTED = True
 
 # EPO CQL 年份範圍，太新的 A1 資料不完整
 SEARCH_YEAR_RANGE = "2000 2024"
+
+# ── 目標產品三要素（給 LLM prompt 和 Pydantic description 動態產生用）──────
+TARGET_DRUG       = "Roflumilast（PDE4 抑制劑）"
+TARGET_ROUTE      = "鼻噴劑（Nasal spray / Nose-to-brain）"
+TARGET_INDICATION = "小腦萎縮症（Spinocerebellar Ataxia, SCA）"
+
+# ── 初篩排除範例（告訴 LLM 什麼是完全無關）─────────────────────────────────
+SCREENING_IRRELEVANT_EXAMPLES = "純 COPD 口服、皮膚科外用、眼科"
+
+# ── 規則評分關鍵字（USE_LLM=False 時使用）────────────────────────────────────
+RULE_DRUG_KEYWORDS       = ["roflumilast", "pde4", "phosphodiesterase 4", "pde-4"]
+RULE_ROUTE_KEYWORDS      = ["nasal", "intranasal", "nose-to-brain", "nasal spray"]
+RULE_INDICATION_KEYWORDS = ["spinocerebellar", "ataxia", "cerebellar", "sca", "machado-joseph"]
+RULE_CNS_KEYWORDS        = ["neurodegenerat", "cerebellum", "purkinje", "cognitive", "neuroprotect"]
+
+# ── 自定義搜尋字串（疾病特定，對應原本的 Strategy F/G）────────────────────────
+CUSTOM_QUERIES = [
+    'ta="cognitive impairment" AND ta="PDE4"',
+    'ta=spinocerebellar',
+]
