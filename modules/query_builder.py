@@ -7,7 +7,7 @@
 
 from config import (
     DRUG_ALIASES, MECHANISMS, FORMULATIONS, INDICATIONS,
-    SEARCH_ONLY_GRANTED, SEARCH_YEAR_RANGE,
+    SEARCH_ONLY_GRANTED, SEARCH_YEAR_RANGE, CUSTOM_QUERIES,
 )
 
 
@@ -49,11 +49,9 @@ def build_queries() -> list[str]:
     for drug in DRUG_ALIASES[:1]:
         queries.append(_add_filters_epb(f"ta={_quote(drug)}"))
 
-    # ── Strategy F：cognitive impairment × PDE4 ───────────────────────────────
-    queries.append(_add_filters('ta="cognitive impairment" AND ta="PDE4"'))
-
-    # ── Strategy G：SCA 直接搜 ────────────────────────────────────────────────
-    queries.append(_add_filters('ta=spinocerebellar'))
+    # Custom queries（從 config 讀，換專案只改 config）
+    for cq in CUSTOM_QUERIES:
+        queries.append(_add_filters(cq))
 
     return queries
 
