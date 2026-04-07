@@ -6,6 +6,7 @@ from modules.query_builder import build_queries
 from modules.patent_fetcher import fetch_patents
 from modules.llm_analyzer   import analyze_patent
 from modules.output_writer  import save_results, print_summary
+from config import MAX_WORKERS
 
 
 def run_pipeline():
@@ -33,7 +34,7 @@ def run_pipeline():
     print(f"\n[3/4] LLM 分析 {len(all_patents)} 筆專利（兩段式）...")
     results = []
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(analyze_patent, p): p for p in all_patents}
         for i, future in enumerate(as_completed(futures), 1):
             try:

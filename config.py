@@ -42,6 +42,11 @@ INDICATIONS = [
 SCREENING_MODEL = "gpt-4o-mini"   # 初篩（全部摘要）
 ANALYSIS_MODEL  = "gpt-4o"        # 精讀（Medium / High 專利）
 
+# 限流保守設定
+MAX_WORKERS = 1
+LLM_MAX_RETRIES = 6
+LLM_RETRY_BASE_SECONDS = 2
+
 # 每次搜尋最多抓幾筆（Strategy G 有 200 筆，設 200 確保全部撈到）
 FETCH_SIZE = 200
 

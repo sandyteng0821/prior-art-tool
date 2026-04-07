@@ -5,6 +5,7 @@
 #   Stage 1 (screening)  — gpt-4o-mini，處理所有摘要，過濾 Low risk
 #   Stage 2 (analysis)   — gpt-4o，精讀 Medium / High 的完整 claims
 
+import time
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
@@ -15,6 +16,7 @@ from config import (
     SCREENING_IRRELEVANT_EXAMPLES,
     RULE_DRUG_KEYWORDS, RULE_ROUTE_KEYWORDS,
     RULE_INDICATION_KEYWORDS, RULE_ADDITIONAL_INDICATION_KEYWORDS,
+    CLAIMS_MAX_CHARS, LLM_MAX_RETRIES, LLM_RETRY_BASE_SECONDS
 )
 
 # ── Pydantic Schemas ──────────────────────────────────────────────────────────
@@ -130,11 +132,24 @@ analysis_prompt = ChatPromptTemplate.from_messages([
 # ── Chains（只在 USE_LLM=True 時初始化，避免沒有 API key 時 crash） ──────────
 
 if USE_LLM:
-    screening_llm = ChatOpenAI(model=SCREENING_MODEL, temperature=0, max_tokens=4000)
-    analysis_llm  = ChatOpenAI(model=ANALYSIS_MODEL,  temperature=0, max_tokens=4000)
+    screening_llm = ChatOpenAI(model=SCREENING_MODEL, temperature=0, max_tokens=120)
+    analysis_llm  = ChatOpenAI(model=ANALYSIS_MODEL,  temperature=0, max_tokens=400)
     screening_chain = screening_prompt | screening_llm.with_structured_output(ScreeningResult)
     analysis_chain  = analysis_prompt  | analysis_llm.with_structured_output(PatentAnalysis)
 
+# ── Helper functions (for API call retry) 
+def invoke_with_retry(chain, payload):
+    for attempt in range(LLM_MAX_RETRIES):
+        try:
+            return chain.invoke(payload)
+        except Exception as e:
+            msg = str(e).lower()
+            if ("429" not in msg) and ("rate_limit" not in msg):
+                raise
+            if attempt == LLM_MAX_RETRIES - 1:
+                raise
+            wait_s = LLM_RETRY_BASE_SECONDS * (2 ** attempt)
+            time.sleep(wait_s)
 
 # ── 公開介面 ──────────────────────────────────────────────────────────────────
 
@@ -144,12 +159,12 @@ def analyze_patent(patent: dict) -> dict:
     回傳原始 patent dict + 分析結果欄位。
     """
     # Stage 1：初篩
-    screening = screening_chain.invoke({
+    screening = invoke_with_retry(screening_chain, {
         "title":    patent.get("title", ""),
         "abstract": patent.get("abstract", ""),
     })
 
-    if not screening.is_relevant:
+    if (not screening.is_relevant) or screening.quick_risk == "Low":
         # Low risk，直接回傳，不花 gpt-4o 費用
         return {
             **patent,
@@ -168,11 +183,11 @@ def analyze_patent(patent: dict) -> dict:
         # 如果沒 Claims，改用 Abstract 頂替
         claims_input = f"(Claims missing, analysis based on Abstract): {patent.get('abstract', '')}"
     else:
-        # 截斷至 6000 字元，這對於判斷 Independent Claims (通常在最前面) 非常夠用了
+        # 截斷至 3000 字元 (=> CLAIMS_MAX_CHARS)，這對於判斷 Independent Claims (通常在最前面) 非常夠用了
         # 既省錢又能避免 Context Window 爆炸
-        claims_input = raw_claims[:6000]
+        claims_input = raw_claims[:CLAIMS_MAX_CHARS]
     # llm analysis
-    analysis = analysis_chain.invoke({
+    analysis = invoke_with_retry(analysis_chain, {
         "title":    patent.get("title", ""),
         "abstract": patent.get("abstract", ""),
         "claims":   claims_input,  # 使用截斷後的字串
