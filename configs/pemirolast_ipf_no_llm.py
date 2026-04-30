@@ -56,7 +56,7 @@ FETCH_SIZE = 200
 CLAIMS_MAX_CHARS = 3000
 
 # LLM 開關：False = 免費規則評分，True = LLM 分析
-USE_LLM = True  # 先用規則模式驗證搜尋結果正確性，確認後再開 LLM
+USE_LLM = False  # 先用規則模式驗證搜尋結果正確性，確認後再開 LLM
 
 # ── 搜尋過濾條件 ──────────────────────────────────────────────────────────────
 SEARCH_ONLY_GRANTED = False
@@ -112,8 +112,4 @@ CUSTOM_QUERIES = [
     'ta="idiopathic pulmonary fibrosis"',
     # 同事討論裡點名的競爭專利
     'ta=cromolyn AND ta="pulmonary fibrosis"',
-    # config.py CUSTOM_QUERIES 補上 (v1 => 擴增搜尋字串)
-    'ta=cromolyn AND ta="lung fibrosis"',
-    'ta=cromolyn AND ta="fibrosis"',   # 更寬
-    'ta="mast cell" AND ta="fibrosis"',
 ]
