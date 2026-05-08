@@ -17,7 +17,7 @@ import epo_ops
 import xmltodict
 from dotenv import load_dotenv
 from config import FETCH_SIZE, CLAIMS_MAX_CHARS
-from modules.patent_store import get_by_id, upsert_patent, log_search
+from modules.patent_store import get_by_id, upsert_patent, log_search, mark_family_fetched, get_family_members
 from config import TARGET_PRODUCT
 
 load_dotenv()
@@ -89,6 +89,7 @@ def fetch_patents(cql_query: str, size: int = FETCH_SIZE) -> list[dict]:
         return []
 
     results = []
+    seen_in_fetch = set()
     for ref in refs:
         doc_id    = ref.get("document-id", {})
         country   = doc_id.get("country", {}).get("$", "")
@@ -104,6 +105,12 @@ def fetch_patents(cql_query: str, size: int = FETCH_SIZE) -> list[dict]:
         if patent:
             log_search(_PROJECT, cql_query, patent_id)
             results.append(patent)
+            seen_in_fetch.add(patent_id)
+            # 把 family members 也加進去
+            for member in patent.pop("_family_members", []):
+                if member["patent_id"] not in seen_in_fetch:
+                    results.append(member)
+                    seen_in_fetch.add(member["patent_id"])
 
         time.sleep(0.5)  # 避免超過 EPO rate limit
 
@@ -134,6 +141,16 @@ def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
     stored = get_by_id(patent_id)
     if stored:
         print(f"  [DB hit] {patent_id}")
+        number, kind = _parse_patent_id(patent_id)
+        if kind in ("A1", "A2"):
+            if not stored.get("family_fetched"):
+                # 還沒展開過，打 family API
+                family_members = _fetch_and_store_family(patent_id, stored.get("year", ""))
+                stored["_family_members"] = family_members
+            else:
+                # 已展開過，直接從 DB 拿
+                print(f"  [family DB hit] {patent_id}")
+                stored["_family_members"] = get_family_members(patent_id)
         return stored
 
     # ── 2. 從 EPO API 抓取 ───────────────────────────────────────────────────
@@ -184,7 +201,11 @@ def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
             except Exception:
                 pass
         # ── 5. 展開 patent family（新增）─────────────────────────────────────
-        _fetch_and_store_family(patent_id, year)
+        # _fetch_and_store_family(patent_id, year)
+        # family 展開，把結果存起來供 fetch_patents 使用
+        family_members = _fetch_and_store_family(patent_id, year) 
+        # 把 family members 附在 patent 上回傳
+        patent["_family_members"] = family_members
 
     return patent
 
@@ -194,6 +215,7 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
     呼叫 EPO family API，把所有 family members 存進 DB。
     只在 A1/A2 時呼叫，避免無限遞迴。
     """
+    fetched_members = []
     number, _ = _parse_patent_id(patent_id)
     try:
         resp = client.family(
@@ -244,7 +266,7 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                 examples    = _parse_examples(description)
 
                 if title or abstract:
-                    upsert_patent({
+                    patent_dict = {
                         "patent_id":          member_id,
                         "title":              title if isinstance(title, str) else "",
                         "abstract":           abstract if isinstance(abstract, str) else "",
@@ -253,11 +275,16 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                         "status":             "Active",
                         "year":               year,
                         "source":             "epo",
-                    })
+                        "family_of":          patent_id,
+                    }
+                    upsert_patent(patent_dict)
+                    fetched_members.append(patent_dict)    
                 time.sleep(0.5)
 
     except Exception as e:
         print(f"  [family API] {patent_id} failed: {e}")
+    mark_family_fetched(patent_id)
+    return fetched_members
 
 
 # ── Examples 解析 ─────────────────────────────────────────────────────────────

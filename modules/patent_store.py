@@ -17,7 +17,7 @@ DB_PATH = os.path.join("cache", "patents.db")
 def _get_conn() -> sqlite3.Connection:
     os.makedirs("cache", exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row   # 讓結果可以用欄位名存取
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -30,16 +30,18 @@ def init_db() -> None:
                 title              TEXT,
                 abstract           TEXT,
                 claims             TEXT,
-                examples_extracted TEXT,   -- 從 description 切出的 Examples 區塊
+                examples_extracted TEXT,
                 status             TEXT,
                 year               TEXT,
-                source             TEXT,   -- 'epo' / 'pdf' / 'manual'
-                fetched_at         TEXT
+                source             TEXT,
+                fetched_at         TEXT,
+                family_fetched     INTEGER DEFAULT 0,
+                family_of          TEXT
             );
 
             CREATE TABLE IF NOT EXISTS search_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                project     TEXT,          -- 例如 'roflumilast_sca'
+                project     TEXT,
                 query       TEXT,
                 patent_id   TEXT,
                 searched_at TEXT
@@ -50,6 +52,24 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_search_log_project
                 ON search_log(project);
         """)
+
+    # Migration：對已存在的 DB 補加欄位
+    with _get_conn() as conn:
+        for sql in [
+            "ALTER TABLE patents ADD COLUMN family_fetched INTEGER DEFAULT 0",
+            "ALTER TABLE patents ADD COLUMN family_of TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_patents_family_of ON patents(family_of)",
+        ]:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # 欄位已存在，跳過
+
+        # Migration：補加 index
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_patents_family_of ON patents(family_of)")
+        except sqlite3.OperationalError:
+            pass
 
 
 # ── 寫入 ──────────────────────────────────────────────────────────────────────
@@ -64,10 +84,12 @@ def upsert_patent(patent: dict) -> None:
         conn.execute("""
             INSERT INTO patents
                 (patent_id, title, abstract, claims,
-                 examples_extracted, status, year, source, fetched_at)
+                 examples_extracted, status, year, source, fetched_at,
+                 family_fetched, family_of)
             VALUES
                 (:patent_id, :title, :abstract, :claims,
-                 :examples_extracted, :status, :year, :source, :fetched_at)
+                 :examples_extracted, :status, :year, :source, :fetched_at,
+                 :family_fetched, :family_of)
             ON CONFLICT(patent_id) DO UPDATE SET
                 title              = excluded.title,
                 abstract           = excluded.abstract,
@@ -76,7 +98,12 @@ def upsert_patent(patent: dict) -> None:
                 status             = excluded.status,
                 year               = excluded.year,
                 source             = excluded.source,
-                fetched_at         = excluded.fetched_at
+                fetched_at         = excluded.fetched_at,
+                family_fetched     = CASE
+                    WHEN excluded.family_fetched = 1 THEN 1
+                    ELSE patents.family_fetched
+                END,
+                family_of          = COALESCE(excluded.family_of, patents.family_of)
         """, {
             "patent_id":          patent.get("patent_id", ""),
             "title":              patent.get("title", ""),
@@ -87,7 +114,30 @@ def upsert_patent(patent: dict) -> None:
             "year":               patent.get("year", ""),
             "source":             patent.get("source", "unknown"),
             "fetched_at":         datetime.now().isoformat(),
+            "family_fetched":     patent.get("family_fetched", 0),
+            "family_of":          patent.get("family_of", None),
         })
+
+
+def mark_family_fetched(patent_id: str) -> None:
+    """標記這筆專利的 family 已經展開過。"""
+    init_db()
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE patents SET family_fetched = 1 WHERE patent_id = ?",
+            (patent_id,)
+        )
+
+
+def get_family_members(patent_id: str) -> list[dict]:
+    """取得某筆 A1 的所有 family members（從 DB）。"""
+    init_db()
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM patents WHERE family_of = ?",
+            (patent_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def log_search(project: str, query: str, patent_id: str) -> None:
@@ -113,10 +163,7 @@ def get_by_id(patent_id: str) -> dict | None:
 
 
 def search_examples(keyword: str) -> list[dict]:
-    """
-    在 examples_extracted 欄位搜尋關鍵字。
-    用途：查某個劑型（如 nasal、chitosan）曾在哪些專利的 examples 中出現。
-    """
+    """在 examples_extracted 欄位搜尋關鍵字。"""
     init_db()
     with _get_conn() as conn:
         rows = conn.execute("""
@@ -151,7 +198,9 @@ def list_all(limit: int = 100) -> list[dict]:
         rows = conn.execute("""
             SELECT patent_id, title, year, source, fetched_at,
                    CASE WHEN examples_extracted != '' THEN 'yes' ELSE 'no' END
-                   AS has_examples
+                   AS has_examples,
+                   family_fetched,
+                   family_of
             FROM patents
             ORDER BY fetched_at DESC
             LIMIT ?
@@ -160,19 +209,27 @@ def list_all(limit: int = 100) -> list[dict]:
 
 
 def stats() -> dict:
-    """回傳 DB 統計資訊，方便確認存了多少東西。"""
+    """回傳 DB 統計資訊。"""
     init_db()
     with _get_conn() as conn:
-        total     = conn.execute("SELECT COUNT(*) FROM patents").fetchone()[0]
-        has_ex    = conn.execute(
+        total          = conn.execute("SELECT COUNT(*) FROM patents").fetchone()[0]
+        has_ex         = conn.execute(
             "SELECT COUNT(*) FROM patents WHERE examples_extracted != ''"
         ).fetchone()[0]
-        by_source = conn.execute(
+        family_fetched = conn.execute(
+            "SELECT COUNT(*) FROM patents WHERE family_fetched = 1"
+        ).fetchone()[0]
+        has_family_of  = conn.execute(
+            "SELECT COUNT(*) FROM patents WHERE family_of IS NOT NULL"
+        ).fetchone()[0]
+        by_source      = conn.execute(
             "SELECT source, COUNT(*) as n FROM patents GROUP BY source"
         ).fetchall()
     return {
         "total_patents":        total,
         "with_examples":        has_ex,
         "without_examples":     total - has_ex,
+        "family_fetched":       family_fetched,
+        "family_members_in_db": has_family_of,
         "by_source":            {r["source"]: r["n"] for r in by_source},
     }
