@@ -251,7 +251,9 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                 member_id = f"{country}{num}{kind}"
 
                 # 已在 DB 就跳過，避免重複抓
-                if get_by_id(member_id):
+                existing = get_by_id(member_id)
+                if existing:
+                    fetched_members.append(existing)
                     continue
 
                 # 只抓 granted 版本（B1/B2），A1 已經有了
