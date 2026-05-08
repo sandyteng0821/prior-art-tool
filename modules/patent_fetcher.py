@@ -253,6 +253,10 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                 # 已在 DB 就跳過，避免重複抓
                 existing = get_by_id(member_id)
                 if existing:
+                    # 補 family_of（如果還沒有的話）
+                    if not existing.get("family_of"):
+                        upsert_patent({**existing, "family_of": patent_id})
+                        existing["family_of"] = patent_id
                     fetched_members.append(existing)
                     continue
 

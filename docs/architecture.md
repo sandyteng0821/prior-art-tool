@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2025-04 (updated after Pemirolast × IPF validation run)
+> Last updated: 2025-05 (updated after family API implementation)
 
 ---
 
@@ -36,7 +36,7 @@ graph TD
         EPOAPI["EPO OPS API\nPaginated · diskcache"]
         B1["Auto B1 Upgrade\nA1/A2 → fetch granted B1"]
         PARSE["_parse_examples()\nSplit description → Examples"]
-        FAMILY["⚠ Family API  MISSING\nSearch only returns A1\nB2 granted not returned"]
+        FAMILY["✅ Family API  IMPLEMENTED\n_fetch_and_store_family()\nA1 → fetch all B1/B2 family members\nstored with family_of reference"]
     end
 
     QA & QD & QCQ --> EPOAPI
@@ -47,11 +47,14 @@ graph TD
     subgraph P3["Phase 3 · Patent Store (patent_store.py)"]
         DB["SQLite  cache/patents.db\nupsert_patent()  ·  [DB hit] cache"]
         SEARCH["Query Interface\nsearch_examples()  search_claims()  stats()"]
+        FAMILY_TRACK["✅ Family tracking\nfamily_fetched: 0/1 flag\nfamily_of: parent A1 reference\nmark_family_fetched()\nget_family_members()"]
         EXPIRY["⚠ Expiry Date  MISSING\nstatus = Unknown fallback"]
     end
 
     PARSE --> DB
+    FAMILY --> DB
     DB --> SEARCH
+    DB --> FAMILY_TRACK
     DB --> EXPIRY
 
     %% Phase 4
@@ -74,7 +77,8 @@ graph TD
     SCHEMA --> OUT([output/gap_analysis_YYYYMMDD.csv])
 
     %% Styles
-    style FAMILY fill:#3a1a1a,stroke:#f85149,color:#f85149
+    style FAMILY fill:#1a3a1a,stroke:#3fb950,color:#3fb950
+    style FAMILY_TRACK fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style EXPIRY fill:#3a1a1a,stroke:#f85149,color:#f85149
     style SCHEMA fill:#2a200a,stroke:#d29922,color:#d29922
 ```
@@ -87,8 +91,8 @@ graph TD
 |--------|------|----------------|
 | Config | `config.py` | All parameters in one place — only file to touch when switching projects |
 | Query Builder | `modules/query_builder.py` | Generate EPO CQL search strings (Strategy A, D, + CUSTOM_QUERIES) |
-| Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, auto-upgrade A1→B1 |
-| Patent Store | `modules/patent_store.py` | SQLite local cache; cross-project persistent store |
+| Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, auto-upgrade A1→B1, expand family |
+| Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; cross-project persistent store |
 | LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 
@@ -97,7 +101,17 @@ graph TD
 ## Fetch Priority Logic
 
 ```
-① Check local patents.db  →  [DB hit] return immediately
+① Check local patents.db  →  [DB hit]
+        │
+        ├─ If A1/A2 and family_fetched=0  →  call _fetch_and_store_family()
+        │       → EPO family API → fetch all B1/B2 members
+        │       → upsert with family_of = parent A1
+        │       → mark_family_fetched(parent)
+        │
+        ├─ If A1/A2 and family_fetched=1  →  [family DB hit]
+        │       → get_family_members() from DB (no API call)
+        │
+        └─ return patent + _family_members
         ↓ miss
 ② EPO OPS API  →  title / abstract / claims / description
         ↓
@@ -105,9 +119,12 @@ graph TD
         ↓
 ④ upsert_patent()  →  write to SQLite
         ↓
-⑤ If A1/A2  →  auto-fetch corresponding B1 (complete claims)
+⑤ If A1/A2  →  auto-fetch B1 (same number, kind code swap)
         ↓
-⑥ ⚠ Family members NOT fetched  →  B2 granted version missed
+⑥ If A1/A2  →  _fetch_and_store_family()
+              → EPO family API → all B1/B2 with different numbers
+              → stored with family_of reference
+              → mark_family_fetched()
 ```
 
 ---
@@ -119,13 +136,37 @@ graph TD
 | EP granted (EPB) | ✅ | ✅ | ✅ | ✅ |
 | EP application (A1/A2) | ✅ | ❌ | partial | ✅ representative |
 | US application (A1) | ✅ | ❌ | ❌ | ✅ representative |
-| US granted (B1/B2) | ✅ | partial | partial | ⚠️ not in search |
+| US granted (B1/B2) | ✅ | partial | partial | ⚠️ not in search, found via family API |
 | WO / AU / CN / MX | partial | ❌ | ❌ | partial |
 
 **Key insight from Pemirolast × IPF validation:**
 EPO search returns the **representative publication** of a patent family (usually A1).
-The granted B2 has a **different patent number** and will NOT appear in search results,
-even though `_get_or_fetch(B2_id)` can retrieve it directly.
+The granted B2 has a **different patent number** — requires EPO family API to discover.
+Family API call: `client.family("publication", Epodoc(number_without_kind), None, ["biblio"])`
+
+---
+
+## Patent Store Schema
+
+```sql
+CREATE TABLE patents (
+    patent_id          TEXT PRIMARY KEY,
+    title              TEXT,
+    abstract           TEXT,
+    claims             TEXT,
+    examples_extracted TEXT,
+    status             TEXT,
+    year               TEXT,
+    source             TEXT,
+    fetched_at         TEXT,
+    family_fetched     INTEGER DEFAULT 0,  -- 0=not expanded, 1=expanded
+    family_of          TEXT               -- parent A1 patent_id
+);
+```
+
+Key functions added:
+- `mark_family_fetched(patent_id)` — mark A1 as expanded
+- `get_family_members(patent_id)` — get all members where `family_of = patent_id`
 
 ---
 
@@ -133,62 +174,75 @@ even though `_get_or_fetch(B2_id)` can retrieve it directly.
 
 ### Current Status
 
-| # | Gap | Location | Priority | Impact | Found in |
-|---|-----|----------|----------|--------|----------|
-| 1 | Patent family not expanded | `patent_fetcher.py` | **P1** | Misses granted B2; underestimates FTO risk | Pemirolast × IPF run |
-| 2 | Auto-upgrade only handles B1, not B2 | `patent_fetcher.py` `_get_or_fetch()` | **P1** | US patents often use B2 kind code | Pemirolast × IPF run |
-| 3 | Single-drug config only | `config.py` + `main.py` | **P1** | Cannot batch-process drug candidate lists from bio team | Architecture review |
-| 4 | Patent expiry date not calculated | `patent_store.py` | **P1** | Cannot filter out expired patents | Architecture review |
-| 5 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | Fields show config values, not text-extracted | Pemirolast × IPF run |
-| 6 | AU / TW / KR coverage poor | EPO OPS data source | **P2** | Non-EP/US patents often missed | Pemirolast × IPF run |
-| 7 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | Hard to join with bio team schema | Architecture review |
-| 8 | Toxicity filtering absent | new module needed | **P2** | Filter step incomplete vs. SOP requirement | Architecture review |
-| 9 | No REST API endpoint | new `api/` layer | **P3** | Bio team cannot call programmatically | Architecture review |
+| # | Gap | Location | Priority | Status | Notes |
+|---|-----|----------|----------|--------|-------|
+| 1 | Patent family not expanded | `patent_fetcher.py` | **P1** | ✅ Fixed | family API implemented 2025-05 |
+| 2 | Pre-existing family members missing family_of | `patent_fetcher.py` | **P1** | ✅ Fixed | backfill on re-process |
+| 3 | backfill_family_of.py for old DB records | new script | **P1** | ⚠️ Pending | 4 known affected patents |
+| 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
+| 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ❌ Open | status = Unknown fallback |
+| 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
+| 7 | AU / TW / KR coverage poor | EPO OPS data source | **P2** | ❌ Open | non-EP/US patents missed |
+| 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ❌ Open | bio team schema mismatch |
+| 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
+| 10 | No REST API endpoint | new `api/` layer | **P3** | ❌ Open | bio team integration |
 
 ### Roadmap
 
 ```
-P1  Search recall improvement
-    ├── Add EPO family API call after each A1 fetch
-    │   → auto-discover and store all family members including B2
-    ├── Extend auto-upgrade to try B1 and B2
-    │   _get_or_fetch: if kind in (A1, A2) → try B1, then B2
-    ├── Accept drug list CSV as input (replace single config entry)
-    └── Add expiry_date field + auto-calculation in patent_store.py
+P1  Next up
+    ├── backfill_family_of.py
+    │   → for patents with family_fetched=1 but members have family_of=NULL
+    │   → re-run family API and update family_of
+    ├── Accept drug list CSV as input
+    └── Add expiry_date field + auto-calculation
 
 P2  Quality and coverage
     ├── Fix rule mode: extract delivery_routes / indications from text
-    │   instead of returning hardcoded config values
     ├── Add drugbank_id / expiry_date to output schema
-    └── New toxicity_filter module (FDA FAERS or DrugBank)
+    └── New toxicity_filter module (deprioritized by bio team)
 
 P3  System integration
-    └── REST API layer so bio team pipeline can call programmatically
+    └── REST API layer
 ```
 
 ---
 
-## Known Limitations (Validated)
+## Known Limitations
 
-### EPO Search Does Not Return Granted B2 Publications
+### EPO Family API — Correct Call Signature
 
-**Reproduced by:** `tests/test_epo_search_vs_fetch.py`
+```python
+# CORRECT: Epodoc without kind code
+resp = client.family(
+    "publication",
+    epo_ops.models.Epodoc(number),  # no kind code
+    None,
+    ["biblio"]
+)
 
+# WRONG: causes URL duplication bug in epo_ops library
+resp = client.family(
+    reference_type="publication",
+    input=epo_ops.models.Epodoc(number, kind),  # kind code causes bug
+    endpoint="biblio",
+)
 ```
-Query:  ta=cromolyn AND ta="pulmonary fibrosis"
-Search returns:  US2019224161A1, US2018193259A1   ← A1 representative
-Missing:         US10561635B2, US10583113B2        ← granted B2, different number
 
-Direct fetch:    _get_or_fetch("US10561635B2") → title + abstract OK
-```
+**Reproduced by:** `tests/test_family_api.py`
 
-Root cause: EPO OPS search indexes one representative publication per family.
-The granted B2 has a different patent number than the A1 — this is not a kind-code
-difference but a patent family issue. Requires EPO family API to discover all members.
+### Pre-existing Family Members (family_of=NULL)
 
-Workaround (short term): Manually import known missing patents by ID using `_get_or_fetch`.
+Patents stored before `family_of` field was introduced have `family_of=NULL`.
+These are invisible to `get_family_members()`.
 
-Fix (P1): After fetching any A1, call EPO family API to retrieve all family members.
+Re-processing the parent A1 will now automatically backfill `family_of` for these members.
+
+**Currently affected (4 patents):**
+- `EP2443120B1` — Crystalline form of Pemirolast
+- `EP2107907B1` — Pemirolast + ramatroban combination
+- `EP1285921B1` — Pemirolast preparation process
+- `NO20210693B1` — Capsaicin × IPF
 
 ---
 
@@ -196,8 +250,18 @@ Fix (P1): After fetching any A1, call EPO family API to retrieve all family memb
 
 | Date | Drug × Indication | Config | Patents found | FTO result | Notes |
 |------|-------------------|--------|---------------|------------|-------|
-| 2025-04 | Roflumilast × SCA | original | — | baseline | original project |
-| 2025-04 | Pemirolast × IPF | `config_pemirolast_ipf.py` | 249 | 0 High / 22 Medium | P0 ✅; B2 gap found |
+| 2025-04 | Roflumilast × SCA | `configs/roflumilast_sca.py` | — | baseline | original project |
+| 2025-04 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 249 | 0 High / 22 Medium | P0 ✅; B2 gap found |
+| 2025-05 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 293 | — | family API implemented; +44 patents vs prev run |
+
+---
+
+## Test Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `tests/test_epo_search_vs_fetch.py` | Reproduces B2 missing from search results |
+| `tests/test_family_api.py` | Validates EPO family API call signature and response parsing |
 
 ---
 
@@ -207,3 +271,4 @@ Fix (P1): After fetching any A1, call EPO family API to retrieve all family memb
 - EPO OPS weekly quota: **3.5 GB**. `cache/epo/` (diskcache) prevents redundant API calls.
 - Re-running `main.py` is safe — patents already in `patents.db` take the `[DB hit]` path.
 - Claims text truncated at `CLAIMS_MAX_CHARS` (default 3000) — adjust in `config.py`.
+- `configs/` directory contains per-project config snapshots. `config.py` is always the active config.
