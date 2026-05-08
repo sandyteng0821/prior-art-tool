@@ -183,8 +183,81 @@ def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
                     print(f"  [B1 auto-fetch] {b1_id}")
             except Exception:
                 pass
+        # ── 5. 展開 patent family（新增）─────────────────────────────────────
+        _fetch_and_store_family(patent_id, year)
 
     return patent
+
+
+def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
+    """
+    呼叫 EPO family API，把所有 family members 存進 DB。
+    只在 A1/A2 時呼叫，避免無限遞迴。
+    """
+    number, _ = _parse_patent_id(patent_id)
+    try:
+        resp = client.family(
+            "publication",
+            epo_ops.models.Epodoc(number),  # 不帶 kind code
+            None,
+            ["biblio"],
+        )
+        data = resp.json()
+        members = (
+            data["ops:world-patent-data"]
+                ["ops:patent-family"]
+                ["ops:family-member"]
+        )
+        if isinstance(members, dict):
+            members = [members]
+
+        for member in members:
+            pub_refs = member.get("publication-reference", {})
+            doc_ids  = pub_refs.get("document-id", [])
+            if isinstance(doc_ids, dict):
+                doc_ids = [doc_ids]
+
+            for doc_id in doc_ids:
+                if doc_id.get("@document-id-type") != "docdb":
+                    continue
+                country = doc_id.get("country", {}).get("$", "")
+                num     = doc_id.get("doc-number", {}).get("$", "")
+                kind    = doc_id.get("kind", {}).get("$", "")
+                if not (country and num and kind):
+                    continue
+
+                member_id = f"{country}{num}{kind}"
+
+                # 已在 DB 就跳過，避免重複抓
+                if get_by_id(member_id):
+                    continue
+
+                # 只抓 granted 版本（B1/B2），A1 已經有了
+                if kind not in ("B1", "B2"):
+                    continue
+
+                print(f"  [family member] {member_id}")
+                title       = _fetch_title(member_id)
+                abstract    = _fetch_abstract(member_id)
+                claims      = _fetch_claims(member_id)
+                description = _fetch_description(member_id)
+                examples    = _parse_examples(description)
+
+                if title or abstract:
+                    upsert_patent({
+                        "patent_id":          member_id,
+                        "title":              title if isinstance(title, str) else "",
+                        "abstract":           abstract if isinstance(abstract, str) else "",
+                        "claims":             (claims if isinstance(claims, str) else "")[:CLAIMS_MAX_CHARS],
+                        "examples_extracted": examples if isinstance(examples, str) else "",
+                        "status":             "Active",
+                        "year":               year,
+                        "source":             "epo",
+                    })
+                time.sleep(0.5)
+
+    except Exception as e:
+        print(f"  [family API] {patent_id} failed: {e}")
 
 
 # ── Examples 解析 ─────────────────────────────────────────────────────────────
