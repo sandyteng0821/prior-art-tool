@@ -191,7 +191,7 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 | 2 | Pre-existing family members missing family_of | `patent_fetcher.py` | **P1** | ✅ Fixed | backfill on re-process |
 | 3 | backfill_family_of.py for old DB records | new script | **P1** | ⚠️ Pending | 4 known affected patents |
 | 3b | backfill_formulation_snippets.py for pre-Task-A rows | new script | **P2** | ⚠️ Pending | NULL on rows fetched before 2026-05 |
-| 3c | `_fetch_claims` returns empty (404 on /epodoc/claims) | `patent_fetcher.py` | **P1** | ❌ Open | affects `claims`, `examples_extracted`, `formulation_snippets` coverage |
+| 3c | `_fetch_claims` returns empty (404 on /epodoc/claims) | `patent_fetcher.py` | **P1** | ❌ Open | affects `claims`, `examples_extracted`, `formulation_snippets` coverage; regex sentence splitter fails on multi-clause claim structures (a) / b) enumeration) |
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
 | 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ❌ Open | status = Unknown fallback |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
