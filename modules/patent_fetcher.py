@@ -11,12 +11,13 @@
 
 import os
 import re
+import json
 import time
 import diskcache
 import epo_ops
 import xmltodict
 from dotenv import load_dotenv
-from config import FETCH_SIZE, CLAIMS_MAX_CHARS
+from config import FETCH_SIZE, CLAIMS_MAX_CHARS, DRUG_ALIASES
 from modules.patent_store import get_by_id, upsert_patent, log_search, mark_family_fetched, get_family_members
 from config import TARGET_PRODUCT
 
@@ -132,6 +133,46 @@ def _parse_patent_id(patent_id: str) -> tuple[str, str]:
     return patent_id, ""
 
 
+# ── Formulation snippet 切句 ─────────────────────────────────────────────────
+
+def _extract_formulation_snippets(text: str, drug_aliases: list[str]) -> list[str]:
+    """
+    從 text 中切出 formulation 相關句子。
+    條件：句子同時包含 drug alias 和劑型關鍵字。
+    """
+    KEYWORDS = [
+        "composition", "formulation", "comprises",
+        "excipient", "tablet", "capsule", "carrier"
+    ]
+
+    sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
+    snippets = []
+
+    for s in sentences:
+        s_lower = s.lower()
+        has_drug = any(alias.lower() in s_lower for alias in drug_aliases)
+        has_keyword = any(k in s_lower for k in KEYWORDS)
+        if has_drug and has_keyword:
+            snippets.append(s.strip())
+
+    return snippets[:20]
+
+
+def _collect_snippets(claims: str, description: str) -> str:
+    """
+    從 claims（優先）和 description 切出 formulation snippets，
+    回傳 JSON string（hard cap 30 句）。
+    輸入為空字串時也能正確處理。
+    """
+    snippets: list[str] = []
+    if claims:
+        snippets += _extract_formulation_snippets(claims, DRUG_ALIASES)
+    if description:
+        snippets += _extract_formulation_snippets(description, DRUG_ALIASES)
+    snippets = snippets[:30]  # hard cap
+    return json.dumps(snippets)
+
+
 def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
     """
     查詢優先順序：本地 DB → EPO API。
@@ -161,15 +202,19 @@ def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
     description = _fetch_description(patent_id)
     examples    = _parse_examples(description)
 
+    claims_str      = claims if isinstance(claims, str) else ""
+    description_str = description if isinstance(description, str) else ""
+
     patent = {
-        "patent_id":          patent_id,
-        "title":              title if isinstance(title, str) else "",
-        "abstract":           abstract if isinstance(abstract, str) else "",
-        "claims":             (claims if isinstance(claims, str) else "")[:CLAIMS_MAX_CHARS],
-        "examples_extracted": examples if isinstance(examples, str) else "",
-        "status":             "Unknown",
-        "year":               year,
-        "source":             "epo",
+        "patent_id":            patent_id,
+        "title":                title if isinstance(title, str) else "",
+        "abstract":             abstract if isinstance(abstract, str) else "",
+        "claims":               claims_str[:CLAIMS_MAX_CHARS],
+        "examples_extracted":   examples if isinstance(examples, str) else "",
+        "formulation_snippets": _collect_snippets(claims_str, description_str),
+        "status":               "Unknown",
+        "year":                 year,
+        "source":               "epo",
     }
 
     # ── 3. 存入本地 DB ────────────────────────────────────────────────────────
@@ -187,15 +232,18 @@ def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
                 b1_description = _fetch_description(b1_id)
                 b1_examples    = _parse_examples(b1_description)
                 if b1_title or b1_claims:
+                    b1_claims_str      = b1_claims if isinstance(b1_claims, str) else ""
+                    b1_description_str = b1_description if isinstance(b1_description, str) else ""
                     upsert_patent({
-                        "patent_id":          b1_id,
-                        "title":              b1_title if isinstance(b1_title, str) else "",
-                        "abstract":           b1_abstract if isinstance(b1_abstract, str) else "",
-                        "claims":             (b1_claims if isinstance(b1_claims, str) else "")[:CLAIMS_MAX_CHARS],
-                        "examples_extracted": b1_examples if isinstance(b1_examples, str) else "",
-                        "status":             "Active",
-                        "year":               year,
-                        "source":             "epo",
+                        "patent_id":            b1_id,
+                        "title":                b1_title if isinstance(b1_title, str) else "",
+                        "abstract":             b1_abstract if isinstance(b1_abstract, str) else "",
+                        "claims":               b1_claims_str[:CLAIMS_MAX_CHARS],
+                        "examples_extracted":   b1_examples if isinstance(b1_examples, str) else "",
+                        "formulation_snippets": _collect_snippets(b1_claims_str, b1_description_str),
+                        "status":               "Active",
+                        "year":                 year,
+                        "source":               "epo",
                     })
                     print(f"  [B1 auto-fetch] {b1_id}")
             except Exception:
@@ -272,16 +320,19 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                 examples    = _parse_examples(description)
 
                 if title or abstract:
+                    claims_str      = claims if isinstance(claims, str) else ""
+                    description_str = description if isinstance(description, str) else ""
                     patent_dict = {
-                        "patent_id":          member_id,
-                        "title":              title if isinstance(title, str) else "",
-                        "abstract":           abstract if isinstance(abstract, str) else "",
-                        "claims":             (claims if isinstance(claims, str) else "")[:CLAIMS_MAX_CHARS],
-                        "examples_extracted": examples if isinstance(examples, str) else "",
-                        "status":             "Active",
-                        "year":               year,
-                        "source":             "epo",
-                        "family_of":          patent_id,
+                        "patent_id":            member_id,
+                        "title":                title if isinstance(title, str) else "",
+                        "abstract":             abstract if isinstance(abstract, str) else "",
+                        "claims":               claims_str[:CLAIMS_MAX_CHARS],
+                        "examples_extracted":   examples if isinstance(examples, str) else "",
+                        "formulation_snippets": _collect_snippets(claims_str, description_str),
+                        "status":               "Active",
+                        "year":                 year,
+                        "source":               "epo",
+                        "family_of":            patent_id,
                     }
                     upsert_patent(patent_dict)
                     fetched_members.append(patent_dict)    

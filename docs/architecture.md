@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2025-05 (updated after family API implementation)
+> Last updated: 2026-05 (Task A: formulation snippet extraction)
 
 ---
 
@@ -36,26 +36,26 @@ graph TD
         EPOAPI["EPO OPS API\nPaginated · diskcache"]
         B1["Auto B1 Upgrade\nA1/A2 → fetch granted B1"]
         PARSE["_parse_examples()\nSplit description → Examples"]
+        SNIP["✅ _extract_formulation_snippets()\ndrug alias × keyword sentence filter\nfrom claims + description\nhard cap 30"]
         FAMILY["✅ Family API  IMPLEMENTED\n_fetch_and_store_family()\nA1 → fetch all B1/B2 family members\nstored with family_of reference"]
     end
 
     QA & QD & QCQ --> EPOAPI
     EPOAPI --> B1 --> PARSE
+    EPOAPI --> SNIP
     EPOAPI --> FAMILY
 
     %% Phase 3
     subgraph P3["Phase 3 · Patent Store (patent_store.py)"]
         DB["SQLite  cache/patents.db\nupsert_patent()  ·  [DB hit] cache"]
-        SEARCH["Query Interface\nsearch_examples()  search_claims()  stats()"]
+        SEARCH["Query Interface\nsearch_examples()  search_claims()\nget_formulation_snippets()  stats()"]
         FAMILY_TRACK["✅ Family tracking\nfamily_fetched: 0/1 flag\nfamily_of: parent A1 reference\nmark_family_fetched()\nget_family_members()"]
         EXPIRY["⚠ Expiry Date  MISSING\nstatus = Unknown fallback"]
     end
 
     PARSE --> DB
+    SNIP --> DB
     FAMILY --> DB
-    DB --> SEARCH
-    DB --> FAMILY_TRACK
-    DB --> EXPIRY
 
     %% Phase 4
     subgraph P4["Phase 4 · LLM Analyzer (llm_analyzer.py)"]
@@ -81,6 +81,7 @@ graph TD
     style FAMILY_TRACK fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style EXPIRY fill:#3a1a1a,stroke:#f85149,color:#f85149
     style SCHEMA fill:#2a200a,stroke:#d29922,color:#d29922
+    style SNIP fill:#1a3a1a,stroke:#3fb950,color:#3fb950
 ```
 
 ---
@@ -91,8 +92,8 @@ graph TD
 |--------|------|----------------|
 | Config | `config.py` | All parameters in one place — only file to touch when switching projects |
 | Query Builder | `modules/query_builder.py` | Generate EPO CQL search strings (Strategy A, D, + CUSTOM_QUERIES) |
-| Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, auto-upgrade A1→B1, expand family |
-| Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; cross-project persistent store |
+| Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, extract formulation snippets, auto-upgrade A1→B1, expand family |
+| Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; formulation snippet storage; cross-project persistent store |
 | LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 
@@ -117,7 +118,10 @@ graph TD
         ↓
 ③ _parse_examples()  →  slice Examples section from description
         ↓
-④ upsert_patent()  →  write to SQLite
+③b _extract_formulation_snippets()  →  drug × keyword sentences
+        from claims (priority) + description, hard cap 30
+        ↓
+④ upsert_patent()  →  write to SQLite (incl. formulation_snippets as JSON)
         ↓
 ⑤ If A1/A2  →  auto-fetch B1 (same number, kind code swap)
         ↓
@@ -150,23 +154,30 @@ Family API call: `client.family("publication", Epodoc(number_without_kind), None
 
 ```sql
 CREATE TABLE patents (
-    patent_id          TEXT PRIMARY KEY,
-    title              TEXT,
-    abstract           TEXT,
-    claims             TEXT,
-    examples_extracted TEXT,
-    status             TEXT,
-    year               TEXT,
-    source             TEXT,
-    fetched_at         TEXT,
-    family_fetched     INTEGER DEFAULT 0,  -- 0=not expanded, 1=expanded
-    family_of          TEXT               -- parent A1 patent_id
+    patent_id            TEXT PRIMARY KEY,
+    title                TEXT,
+    abstract             TEXT,
+    claims               TEXT,
+    examples_extracted   TEXT,    -- Examples section (full)
+    formulation_snippets TEXT,    -- JSON list: drug × keyword sentences (≤30)
+    status               TEXT,
+    year                 TEXT,
+    source               TEXT,
+    fetched_at           TEXT,
+    family_fetched       INTEGER DEFAULT 0,
+    family_of            TEXT
 );
 ```
 
 Key functions added:
 - `mark_family_fetched(patent_id)` — mark A1 as expanded
 - `get_family_members(patent_id)` — get all members where `family_of = patent_id`
+- `get_formulation_snippets(patent_id)` — return parsed list of formulation sentences
+
+Note: `examples_extracted` and `formulation_snippets` are complementary —
+`examples_extracted` keeps the full Examples section for FTO analysis;
+`formulation_snippets` keeps targeted drug × keyword sentences for formulation evidence.
+Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 
 ---
 
@@ -179,6 +190,8 @@ Key functions added:
 | 1 | Patent family not expanded | `patent_fetcher.py` | **P1** | ✅ Fixed | family API implemented 2025-05 |
 | 2 | Pre-existing family members missing family_of | `patent_fetcher.py` | **P1** | ✅ Fixed | backfill on re-process |
 | 3 | backfill_family_of.py for old DB records | new script | **P1** | ⚠️ Pending | 4 known affected patents |
+| 3b | backfill_formulation_snippets.py for pre-Task-A rows | new script | **P2** | ⚠️ Pending | NULL on rows fetched before 2026-05 |
+| 3c | `_fetch_claims` returns empty (404 on /epodoc/claims) | `patent_fetcher.py` | **P1** | ❌ Open | affects `claims`, `examples_extracted`, `formulation_snippets` coverage |
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
 | 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ❌ Open | status = Unknown fallback |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
@@ -253,6 +266,7 @@ Re-processing the parent A1 will now automatically backfill `family_of` for thes
 | 2025-04 | Roflumilast × SCA | `configs/roflumilast_sca.py` | — | baseline | original project |
 | 2025-04 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 249 | 0 High / 22 Medium | P0 ✅; B2 gap found |
 | 2025-05 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 293 | — | family API implemented; +44 patents vs prev run |
+| 2026-05 | Acetaminophen × formulation evidence | `configs/acetaminophen_formulation_evidence.py` | — | Task A verified | snippet extraction added; `_fetch_claims` 404 bug surfaced as blocker for full validation |
 
 ---
 
@@ -262,6 +276,7 @@ Re-processing the parent A1 will now automatically backfill `family_of` for thes
 |--------|---------|
 | `tests/test_epo_search_vs_fetch.py` | Reproduces B2 missing from search results |
 | `tests/test_family_api.py` | Validates EPO family API call signature and response parsing |
+| `tests/test_formulation_snippets.py` | Regression tests for `_extract_formulation_snippets` — drug × keyword filter, alias matching, cap, JSON-serializability |
 
 ---
 

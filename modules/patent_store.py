@@ -9,6 +9,7 @@
 
 import sqlite3
 import os
+import json
 from datetime import datetime
 
 DB_PATH = os.path.join("cache", "patents.db")
@@ -26,17 +27,18 @@ def init_db() -> None:
     with _get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS patents (
-                patent_id          TEXT PRIMARY KEY,
-                title              TEXT,
-                abstract           TEXT,
-                claims             TEXT,
-                examples_extracted TEXT,
-                status             TEXT,
-                year               TEXT,
-                source             TEXT,
-                fetched_at         TEXT,
-                family_fetched     INTEGER DEFAULT 0,
-                family_of          TEXT
+                patent_id            TEXT PRIMARY KEY,
+                title                TEXT,
+                abstract             TEXT,
+                claims               TEXT,
+                examples_extracted   TEXT,
+                formulation_snippets TEXT,
+                status               TEXT,
+                year                 TEXT,
+                source               TEXT,
+                fetched_at           TEXT,
+                family_fetched       INTEGER DEFAULT 0,
+                family_of            TEXT
             );
 
             CREATE TABLE IF NOT EXISTS search_log (
@@ -58,6 +60,7 @@ def init_db() -> None:
         for sql in [
             "ALTER TABLE patents ADD COLUMN family_fetched INTEGER DEFAULT 0",
             "ALTER TABLE patents ADD COLUMN family_of TEXT",
+            "ALTER TABLE patents ADD COLUMN formulation_snippets TEXT",
             "CREATE INDEX IF NOT EXISTS idx_patents_family_of ON patents(family_of)",
         ]:
             try:
@@ -84,38 +87,42 @@ def upsert_patent(patent: dict) -> None:
         conn.execute("""
             INSERT INTO patents
                 (patent_id, title, abstract, claims,
-                 examples_extracted, status, year, source, fetched_at,
+                 examples_extracted, formulation_snippets,
+                 status, year, source, fetched_at,
                  family_fetched, family_of)
             VALUES
                 (:patent_id, :title, :abstract, :claims,
-                 :examples_extracted, :status, :year, :source, :fetched_at,
+                 :examples_extracted, :formulation_snippets,
+                 :status, :year, :source, :fetched_at,
                  :family_fetched, :family_of)
             ON CONFLICT(patent_id) DO UPDATE SET
-                title              = excluded.title,
-                abstract           = excluded.abstract,
-                claims             = excluded.claims,
-                examples_extracted = excluded.examples_extracted,
-                status             = excluded.status,
-                year               = excluded.year,
-                source             = excluded.source,
-                fetched_at         = excluded.fetched_at,
-                family_fetched     = CASE
+                title                = excluded.title,
+                abstract             = excluded.abstract,
+                claims               = excluded.claims,
+                examples_extracted   = excluded.examples_extracted,
+                formulation_snippets = excluded.formulation_snippets,
+                status               = excluded.status,
+                year                 = excluded.year,
+                source               = excluded.source,
+                fetched_at           = excluded.fetched_at,
+                family_fetched       = CASE
                     WHEN excluded.family_fetched = 1 THEN 1
                     ELSE patents.family_fetched
                 END,
-                family_of          = COALESCE(excluded.family_of, patents.family_of)
+                family_of            = COALESCE(excluded.family_of, patents.family_of)
         """, {
-            "patent_id":          patent.get("patent_id", ""),
-            "title":              patent.get("title", ""),
-            "abstract":           patent.get("abstract", ""),
-            "claims":             patent.get("claims", ""),
-            "examples_extracted": patent.get("examples_extracted", ""),
-            "status":             patent.get("status", "Unknown"),
-            "year":               patent.get("year", ""),
-            "source":             patent.get("source", "unknown"),
-            "fetched_at":         datetime.now().isoformat(),
-            "family_fetched":     patent.get("family_fetched", 0),
-            "family_of":          patent.get("family_of", None),
+            "patent_id":            patent.get("patent_id", ""),
+            "title":                patent.get("title", ""),
+            "abstract":             patent.get("abstract", ""),
+            "claims":               patent.get("claims", ""),
+            "examples_extracted":   patent.get("examples_extracted", ""),
+            "formulation_snippets": patent.get("formulation_snippets", None),
+            "status":               patent.get("status", "Unknown"),
+            "year":                 patent.get("year", ""),
+            "source":               patent.get("source", "unknown"),
+            "fetched_at":           datetime.now().isoformat(),
+            "family_fetched":       patent.get("family_fetched", 0),
+            "family_of":            patent.get("family_of", None),
         })
 
 
@@ -160,6 +167,22 @@ def get_by_id(patent_id: str) -> dict | None:
             "SELECT * FROM patents WHERE patent_id = ?", (patent_id,)
         ).fetchone()
     return dict(row) if row else None
+
+
+def get_formulation_snippets(patent_id: str) -> list[str]:
+    """
+    取得某筆專利的 formulation snippets（已解析為 list）。
+    找不到專利或欄位為 NULL 時回傳空 list。
+    """
+    init_db()
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT formulation_snippets FROM patents WHERE patent_id = ?",
+            (patent_id,)
+        ).fetchone()
+    if not row:
+        return []
+    return json.loads(row["formulation_snippets"] or "[]")
 
 
 def search_examples(keyword: str) -> list[dict]:
