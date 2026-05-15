@@ -543,7 +543,7 @@ def _fetch_claims(patent_id: str) -> str:
             else:
                 result = str(claim_texts)
 
-    except Exception:
+    except Exception as e:
         print(f"  [_fetch_claims] {patent_id} failed: {type(e).__name__}: {str(e)[:100]}")
         result = ""
 
