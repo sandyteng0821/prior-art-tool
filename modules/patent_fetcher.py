@@ -141,7 +141,8 @@ def _extract_formulation_snippets(text: str, drug_aliases: list[str]) -> list[st
     條件：句子同時包含 drug alias 和劑型關鍵字。
     """
     KEYWORDS = [
-        "composition", "formulation", "comprises",
+        "composition", "formulation", 
+        "compris", # extract comprising/comprises/comprised/comprise
         "excipient", "tablet", "capsule", "carrier"
     ]
 
@@ -543,6 +544,7 @@ def _fetch_claims(patent_id: str) -> str:
                 result = str(claim_texts)
 
     except Exception:
+        print(f"  [_fetch_claims] {patent_id} failed: {type(e).__name__}: {str(e)[:100]}")
         result = ""
 
     cache.set(cache_key, result, expire=60 * 60 * 24 * 30)
