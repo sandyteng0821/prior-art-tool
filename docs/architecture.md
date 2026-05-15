@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2026-05 (Task A: formulation snippet extraction)
+> Last updated: 2026-05 (Task C: keyword stemming fix + EPO coverage doc)
 
 ---
 
@@ -139,9 +139,14 @@ graph TD
 |-------------|:--------------:|:------:|:--------------------:|:---------------:|
 | EP granted (EPB) | ✅ | ✅ | ✅ | ✅ |
 | EP application (A1/A2) | ✅ | ❌ | partial | ✅ representative |
-| US application (A1) | ✅ | ❌ | ❌ | ✅ representative |
-| US granted (B1/B2) | ✅ | partial | partial | ⚠️ not in search, found via family API |
-| WO / AU / CN / MX | partial | ❌ | ❌ | partial |
+| US application (A1) | ✅ | ❌¹ | ❌¹ | ✅ representative |
+| US granted (B1/B2) | ✅ | ❌¹ | ❌¹ | ⚠️ not in search, found via family API |
+| WO / AU / CN / MX | partial | ❌¹ | ❌¹ | partial |
+
+¹ EPO OPS subscription does not include fulltext (claims/description) for
+non-EP jurisdictions. Returns HTTP 404. This is a data licensing limit,
+not a code bug. Verified 2026-05 via Task C probe matrix across EP/US/CN
+patents × Epodoc/Docdb/Original model classes.
 
 **Key insight from Pemirolast × IPF validation:**
 EPO search returns the **representative publication** of a patent family (usually A1).
@@ -191,7 +196,9 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 | 2 | Pre-existing family members missing family_of | `patent_fetcher.py` | **P1** | ✅ Fixed | backfill on re-process |
 | 3 | backfill_family_of.py for old DB records | new script | **P1** | ⚠️ Pending | 4 known affected patents |
 | 3b | backfill_formulation_snippets.py for pre-Task-A rows | new script | **P2** | ⚠️ Pending | NULL on rows fetched before 2026-05 |
-| 3c | `_fetch_claims` returns empty (404 on /epodoc/claims) | `patent_fetcher.py` | **P1** | ❌ Open | affects `claims`, `examples_extracted`, `formulation_snippets` coverage; regex sentence splitter fails on multi-clause claim structures (a) / b) enumeration) |
+| 3c | `_fetch_claims` returns empty for US/CN granted | `patent_fetcher.py` | **N/A** | ✅ Investigated | Not a code bug — EPO data licensing limit (see Known Limitations). EP granted works correctly. Verified 2026-05. |
+| 3d | Snippet extraction missed `comprising`/`comprised` | `patent_fetcher.py` | **P1** | ✅ Fixed | Keyword `comprises` → `compris` (substring matches all three verb forms). Task C 2026-05. |
+| 3e | Silent except in `_fetch_claims` hid EPO 404 | `patent_fetcher.py` | **P2** | ✅ Fixed | Added warning log; behavior unchanged for callers. Task C 2026-05. |
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
 | 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ❌ Open | status = Unknown fallback |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
@@ -244,6 +251,31 @@ resp = client.family(
 
 **Reproduced by:** `tests/test_family_api.py`
 
+### EPO Fulltext Coverage by Jurisdiction
+
+EPO OPS subscription provides fulltext (claims/description endpoints) only
+for EP-issued patents (EPB). US, CN, JP, WO, etc. fulltext returns HTTP
+404 by EPO design — this is a data licensing limitation, not a code
+defect.
+
+Practical implications:
+- US/CN/WO patents in our DB have empty `claims` and `examples_extracted`
+- Snippet extraction for these patents relies entirely on abstract
+  (abstract endpoint IS available for all jurisdictions)
+- Family expansion of EP-A1 to EP-B1 is the primary path to obtain
+  granted-patent fulltext for analysis
+- The `_fetch_claims` function logs a warning on 404 but returns empty
+  string (caller-compatible behavior)
+
+Investigation (Task C, 2026-05) confirmed via probe matrix that no
+combination of Epodoc / Docdb / Original model classes unlocks non-EP
+fulltext — the restriction is at EPO's data layer, not in our client.
+
+Future option: integrate a separate fulltext source (e.g. Google Patents
+Public Datasets) for US/CN coverage. Out of scope for current iteration.
+
+---
+
 ### Pre-existing Family Members (family_of=NULL)
 
 Patents stored before `family_of` field was introduced have `family_of=NULL`.
@@ -266,7 +298,7 @@ Re-processing the parent A1 will now automatically backfill `family_of` for thes
 | 2025-04 | Roflumilast × SCA | `configs/roflumilast_sca.py` | — | baseline | original project |
 | 2025-04 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 249 | 0 High / 22 Medium | P0 ✅; B2 gap found |
 | 2025-05 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 293 | — | family API implemented; +44 patents vs prev run |
-| 2026-05 | Acetaminophen × formulation evidence | `configs/acetaminophen_formulation_evidence.py` | — | Task A verified | snippet extraction added; `_fetch_claims` 404 bug surfaced as blocker for full validation |
+| 2026-05 | Acetaminophen × formulation evidence | `configs/acetaminophen_formulation_evidence.py` | — | Task A + C verified | snippet extraction added (Task A); Task C investigation reclassified `_fetch_claims` 404 as EPO licensing limit (non-EP) and fixed keyword stem bug; EP2089013B1 verified end-to-end |
 
 ---
 
