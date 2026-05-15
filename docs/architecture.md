@@ -96,6 +96,7 @@ graph TD
 | Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; formulation snippet storage; cross-project persistent store |
 | LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
+| Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
 
 ---
 
@@ -319,3 +320,24 @@ Re-processing the parent A1 will now automatically backfill `family_of` for thes
 - Re-running `main.py` is safe — patents already in `patents.db` take the `[DB hit]` path.
 - Claims text truncated at `CLAIMS_MAX_CHARS` (default 3000) — adjust in `config.py`.
 - `configs/` directory contains per-project config snapshots. `config.py` is always the active config.
+
+---
+
+## Developer Tools
+
+### `tools/inspect_patent.py`
+
+Ad-hoc patent inspection independent of the production pipeline.
+
+- Reads any patent from `cache/patents.db`
+- Re-runs `_extract_formulation_snippets` with user-supplied aliases/keywords
+- On DB miss: fetches from EPO without persisting (sandbox mode)
+- Read-only with respect to the main DB
+
+Useful for:
+- Quick "does this patent mention X?" queries
+- Testing new keyword/alias variants before committing config changes
+- Cross-project exploration (find Y in patents from a different project)
+- Debugging Task A extraction quality on individual patents
+
+See module docstring for usage examples.
