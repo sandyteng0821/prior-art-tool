@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2026-05 (Task C: keyword stemming fix + EPO coverage doc)
+> Last updated: 2026-05 (Bug X: family expansion kind filter widening + self-skip)
 
 ---
 
@@ -37,7 +37,7 @@ graph TD
         B1["Auto B1 Upgrade\nA1/A2 → fetch granted B1"]
         PARSE["_parse_examples()\nSplit description → Examples"]
         SNIP["✅ _extract_formulation_snippets()\ndrug alias × keyword sentence filter\nfrom claims + description\nhard cap 30"]
-        FAMILY["✅ Family API  IMPLEMENTED\n_fetch_and_store_family()\nA1 → fetch all B1/B2 family members\nstored with family_of reference"]
+        FAMILY["✅ Family API  IMPLEMENTED\n_fetch_and_store_family()\nA1 → fetch all family members\nkind in {B1, B2, A1, A2, A}\nstored with family_of reference\nself-skip applied"]
     end
 
     QA & QD & QCQ --> EPOAPI
@@ -92,7 +92,7 @@ graph TD
 |--------|------|----------------|
 | Config | `config.py` | All parameters in one place — only file to touch when switching projects |
 | Query Builder | `modules/query_builder.py` | Generate EPO CQL search strings (Strategy A, D, + CUSTOM_QUERIES) |
-| Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, extract formulation snippets, auto-upgrade A1→B1, expand family |
+| Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, extract formulation snippets, auto-upgrade A1→B1, expand family (cross-jurisdiction A-series included) |
 | Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; formulation snippet storage; cross-project persistent store |
 | LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
@@ -106,7 +106,8 @@ graph TD
 ① Check local patents.db  →  [DB hit]
         │
         ├─ If A1/A2 and family_fetched=0  →  call _fetch_and_store_family()
-        │       → EPO family API → fetch all B1/B2 members
+        │       → EPO family API → fetch all family members
+        │         (kind in {B1, B2, A1, A2, A}, self-skip applied)
         │       → upsert with family_of = parent A1
         │       → mark_family_fetched(parent)
         │
@@ -127,7 +128,8 @@ graph TD
 ⑤ If A1/A2  →  auto-fetch B1 (same number, kind code swap)
         ↓
 ⑥ If A1/A2  →  _fetch_and_store_family()
-              → EPO family API → all B1/B2 with different numbers
+              → EPO family API → all family members
+                (kind in {B1, B2, A1, A2, A}, self-skip applied)
               → stored with family_of reference
               → mark_family_fetched()
 ```
@@ -195,15 +197,17 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 |---|-----|----------|----------|--------|-------|
 | 1 | Patent family not expanded | `patent_fetcher.py` | **P1** | ✅ Fixed | family API implemented 2025-05 |
 | 2 | Pre-existing family members missing family_of | `patent_fetcher.py` | **P1** | ✅ Fixed | backfill on re-process |
-| 3 | backfill_family_of.py for old DB records | new script | **P1** | ⚠️ Pending | 4 known affected patents |
+| 3a | backfill_family_of.py for old DB records (family_of=NULL) | new script | **P1** | ⚠️ Pending | 4 known affected patents (Case 1) |
 | 3b | backfill_formulation_snippets.py for pre-Task-A rows | new script | **P2** | ⚠️ Pending | NULL on rows fetched before 2026-05 |
 | 3c | `_fetch_claims` returns empty for US/CN granted | `patent_fetcher.py` | **N/A** | ✅ Investigated | Not a code bug — EPO data licensing limit (see Known Limitations). EP granted works correctly. Verified 2026-05. |
 | 3d | Snippet extraction missed `comprising`/`comprised` | `patent_fetcher.py` | **P1** | ✅ Fixed | Keyword `comprises` → `compris` (substring matches all three verb forms). Task C 2026-05. |
 | 3e | Silent except in `_fetch_claims` hid EPO 404 | `patent_fetcher.py` | **P2** | ✅ Fixed | Added warning log; behavior unchanged for callers. Task C 2026-05. |
+| 3f | backfill A-series family members (Case 2) | new script | **P1** | ⚠️ Pending | Parents fetched before May 2026 may have missed TW/KR/AU/JP siblings |
+| 3g | `_fetch_and_store_family()` filter widened to accept A-series | `patent_fetcher.py` | **P1** | ✅ Fixed | Was `{B1, B2}`, now `{B1, B2, A1, A2, A}`. Self-reference skip also added. May 2026. |
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
 | 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ❌ Open | status = Unknown fallback |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
-| 7 | AU / TW / KR coverage poor | EPO OPS data source | **P2** | ❌ Open | non-EP/US patents missed |
+| 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion now recovers cross-jurisdiction siblings (3g). Orphan patents (no EP/US family member found by query) still missed — needs mechanism-based or full-text query strategy (Bug Y). |
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ❌ Open | bio team schema mismatch |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
 | 10 | No REST API endpoint | new `api/` layer | **P3** | ❌ Open | bio team integration |
@@ -212,11 +216,16 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 
 ```
 P1  Next up
-    ├── backfill_family_of.py
-    │   → for patents with family_fetched=1 but members have family_of=NULL
-    │   → re-run family API and update family_of
-    ├── Accept drug list CSV as input
-    └── Add expiry_date field + auto-calculation
+    ├── Backfill family expansion (3a + 3f combined)
+    │   → for parents fetched before May 2026 filter widening
+    │   → reset family_fetched=0, re-trigger family API
+    │   → covers both family_of=NULL legacy rows and missed A-series siblings
+    ├── Backfill formulation_snippets (3b)
+    │   → for pre-Task-A rows with formulation_snippets=NULL
+    │   → no API call needed; re-run extraction on existing claims/examples
+    ├── Investigate Bug Y (mechanism/structure-described patents) (row 7)
+    ├── Accept drug list CSV as input (row 4)
+    └── Add expiry_date field + auto-calculation (row 5)
 
 P2  Quality and coverage
     ├── Fix rule mode: extract delivery_routes / indications from text
@@ -277,18 +286,59 @@ Public Datasets) for US/CN coverage. Out of scope for current iteration.
 
 ---
 
-### Pre-existing Family Members (family_of=NULL)
+### Incomplete Family Coverage
 
-Patents stored before `family_of` field was introduced have `family_of=NULL`.
-These are invisible to `get_family_members()`.
+Two historical states cause family members to be incomplete in the local DB.
+Both can be resolved by re-processing the parent (which will re-trigger
+family API call), but **a backfill script for existing DB rows is pending**.
 
-Re-processing the parent A1 will now automatically backfill `family_of` for these members.
+#### Case 1: `family_of = NULL`
 
-**Currently affected (4 patents):**
+Patents stored before the `family_of` field was introduced have
+`family_of = NULL` and are invisible to `get_family_members()`.
+
+Re-processing the parent A1 will automatically backfill `family_of` for
+these members.
+
+**Known affected (4 patents):**
 - `EP2443120B1` — Crystalline form of Pemirolast
 - `EP2107907B1` — Pemirolast + ramatroban combination
 - `EP1285921B1` — Pemirolast preparation process
 - `NO20210693B1` — Capsaicin × IPF
+
+#### Case 2: Missing A-series family members
+
+For parents fetched before May 2026, `_fetch_and_store_family()` skipped
+any family member whose kind code was not `B1` or `B2`. This silently
+omitted cross-jurisdiction application versions (e.g. TW, KR, AU, JP
+filings that publish as `A` rather than `B1/B2`).
+
+The filter was widened in May 2026 to accept `{B1, B2, A1, A2, A}`,
+but existing DB rows with `family_fetched = 1` are **not** automatically
+re-expanded — they take the `[DB hit]` path on re-run.
+
+**Known recovered (after May 2026 fix):**
+- `WO2023073600A1` — TW202328118A + KR20230062785A added on re-process
+
+**Likely still missing** (any parent with `family_fetched = 1` set
+before May 2026 may have lost cross-jurisdiction A-series siblings).
+Backfill script is the proper resolution.
+
+#### Backfill (pending)
+
+A backfill script is needed to reset `family_fetched = 0` on parents
+fetched before the May 2026 fix and trigger a full re-expansion. Open
+items:
+
+- Decide scope: only Pemirolast/Acetaminophen/Roflumilast projects, or
+  all parents in DB?
+- Estimate EPO API impact (each parent = 1 family API call + N member
+  fetches)
+- Define "fetched before May 2026" detection (use `fetched_at` column
+  comparison, or just `family_fetched = 1 AND family_of IS NULL` as
+  proxy?)
+
+Tracked as Gap Analysis item.
 
 ---
 
@@ -300,6 +350,7 @@ Re-processing the parent A1 will now automatically backfill `family_of` for thes
 | 2025-04 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 249 | 0 High / 22 Medium | P0 ✅; B2 gap found |
 | 2025-05 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 293 | — | family API implemented; +44 patents vs prev run |
 | 2026-05 | Acetaminophen × formulation evidence | `configs/acetaminophen_formulation_evidence.py` | — | Task A + C verified | snippet extraction added (Task A); Task C investigation reclassified `_fetch_claims` 404 as EPO licensing limit (non-EP) and fixed keyword stem bug; EP2089013B1 verified end-to-end |
+| 2026-05 | Pemirolast × IPF (re-audit) | `configs/pemirolast_ipf.py` | — | Bug X verified | family expansion filter widened (B1/B2 → {B1,B2,A1,A2,A}); self-reference skip added; WO2023073600A1 family now correctly recovers TW202328118A + KR20230062785A; backfill of pre-May-2026 parents pending |
 
 ---
 

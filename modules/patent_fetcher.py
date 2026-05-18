@@ -298,7 +298,9 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                     continue
 
                 member_id = f"{country}{num}{kind}"
-
+                # Skip self
+                if member_id == patent_id:
+                    continue
                 # 已在 DB 就跳過，避免重複抓
                 existing = get_by_id(member_id)
                 if existing:
@@ -310,7 +312,8 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                     continue
 
                 # 只抓 granted 版本（B1/B2），A1 已經有了
-                if kind not in ("B1", "B2"):
+                # if kind not in ("B1", "B2"):
+                if kind not in ("B1", "B2", "A1", "A2", "A"):
                     continue
 
                 print(f"  [family member] {member_id}")
