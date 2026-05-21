@@ -1,0 +1,48 @@
+{
+  "drug": "Ampicillin",
+  "target_excipient": "Lactose, Anhydrous",
+  "evaluated_at": "2026-05-21T11:30:12.233556",
+  "git_commit": "992ee54a5f4512d2fc3309014704e51539df63c1",
+  "candidate_patents": [
+    "US7108864B1",
+    "US2013029965A1",
+    "CN103830190A",
+    "EA004311B1",
+    "NZ575435A"
+  ],
+  "keyword_list_used": [
+    "lactose",
+    "polymethacrylate",
+    "microcrystalline cellulose",
+    "mcc",
+    "powdered cellulose",
+    "polyethylene glycol",
+    "peg",
+    "sorbitol",
+    "calcium phosphate",
+    "carboxymethylcellulose",
+    "cmc",
+    "erythritol",
+    "fumaric acid"
+  ],
+  "ground_truth_keywords": [
+    "carboxymethylcellulose",
+    "lactose",
+    "microcrystalline cellulose",
+    "polyethylene glycol"
+  ],
+  "keyword_to_patents": {
+    "lactose": [
+      "EA004311B1"
+    ],
+    "microcrystalline cellulose": [
+      "EA004311B1"
+    ],
+    "polyethylene glycol": [
+      "CN103830190A"
+    ],
+    "carboxymethylcellulose": [
+      "EA004311B1"
+    ]
+  }
+}
