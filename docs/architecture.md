@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2026-05 (Bug X: family expansion kind filter widening + self-skip)
+> Last updated: 2026-05 (Task E: excipient pipeline eval V0)
 
 ---
 
@@ -358,6 +358,7 @@ Tracked as Gap Analysis item.
 | 2025-05 | Pemirolast × IPF | `configs/pemirolast_ipf.py` | 293 | — | family API implemented; +44 patents vs prev run |
 | 2026-05 | Acetaminophen × formulation evidence | `configs/acetaminophen_formulation_evidence.py` | — | Task A + C verified | snippet extraction added (Task A); Task C investigation reclassified `_fetch_claims` 404 as EPO licensing limit (non-EP) and fixed keyword stem bug; EP2089013B1 verified end-to-end |
 | 2026-05 | Pemirolast × IPF (re-audit) | `configs/pemirolast_ipf.py` | — | Bug X verified | family expansion filter widened (B1/B2 → {B1,B2,A1,A2,A}); self-reference skip added; WO2023073600A1 family now correctly recovers TW202328118A + KR20230062785A; backfill of pre-May-2026 parents pending |
+| 2026-05 | Ampicillin × formulation evidence | `configs/ampicillin_formulation_evidence.py` | 188 | Task E verified | Excipient pipeline eval V0; top 10 recommendations match manual test table; P@5=0.40 P@10=0.20 (abstract-only ground truth, biased low by design) |
 
 ---
 
@@ -368,6 +369,7 @@ Tracked as Gap Analysis item.
 | `tests/test_epo_search_vs_fetch.py` | Reproduces B2 missing from search results |
 | `tests/test_family_api.py` | Validates EPO family API call signature and response parsing |
 | `tests/test_formulation_snippets.py` | Regression tests for `_extract_formulation_snippets` — drug × keyword filter, alias matching, cap, JSON-serializability |
+| `eval_v0.py` | Excipient pipeline evaluation V0 — reads patent DB, extracts keyword-based ground truth, calls recommend API, computes P@k |
 
 ---
 
