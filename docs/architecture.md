@@ -10,6 +10,13 @@
 Five-phase pipeline: config → query → fetch → store → analyze → output.  
 Each phase has a distinct responsibility and a clear handoff to the next.
 
+> 📄 **Design rationale:** See [`./spec/design_formulation_evidence.md`](./spec/design_formulation_evidence.md)
+> for the strategic context behind the formulation evidence subsystem
+> (snippet extraction, two-layer analysis, why not store full description).
+> 
+> 📄 **Active task specs:** See [`./spec/task_A.md`](./spec/task_A.md) through [`./spec/task_E.md`](./spec/task_E.md)
+> for individual feature/fix specs.
+
 ---
 
 ## End-to-End Data Flow
