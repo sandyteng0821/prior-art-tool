@@ -188,6 +188,38 @@ Fixed (Bug X, commit `c3206ce`): filter now accepts `{B1, B2, A1, A2, A}`.
 
 Pre-fix DB rows are not retroactively re-expanded. See Task D backfill spec.
 
+### 4.6 V1 P@k quality scales with evidence base size, not pipeline correctness
+
+實證 (2026-05-22, after Task F ship): V1 在不同 (drug, target excipient)
+組合跑出來的 P@k 數字差異極大，不代表 pipeline 機制有問題。
+
+| Run | Candidate set | Avg text/patent | Ground truth size | P@5 | P@10 |
+|---|---|---|---|---|---|
+| Ampicillin × Lactose, Anhydrous | 187 | 2,565 chars | 3 keywords | 0.40 | 0.20 |
+| Acetaminophen × MCC | 677 | 3,116 chars | 15 keywords | 1.00 | 0.90 |
+
+差異來自 weak-label evaluation 的本質限制：
+
+- 主流 (drug × excipient) 組合（e.g. acetaminophen tablet + MCC）在 patent
+  corpus 有密集 evidence，V1 substring match 容易命中
+- 邊緣組合（e.g. ampicillin oral 多元劑型）evidence 稀薄、人工策展補強
+  的關鍵 patent 不在 auto-derived CSV 裡，V1 結果不可靠
+
+**實作 implications:**
+
+- 不要把 V1 P@k 當作絕對品質指標
+- 跨 (drug, target) 比較 V1 P@k 需要 control for evidence base size
+- 弱 evidence 場景（新藥、冷門 excipient、稀有劑型）需要 human-curated
+  supplement（e.g. `ampicillin_formulation.md` pattern）
+- task_G 設計時應考慮把 evidence base size 當成 metadata 一起記錄,
+  不只記 P@k
+
+**Related:**
+- `docs/spec/task_F.md` post-implementation note (Ampicillin baseline)
+- `outputs/ground_truth/Acetaminophen_Cellulose_Microcrystalline_v1.json`
+  (Acetaminophen baseline)
+- `docs/ampicillin_ground_truth_notes.md`
+
 ---
 
 ## 5. Investigation Playbook
