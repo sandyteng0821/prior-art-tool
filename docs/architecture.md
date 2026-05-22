@@ -369,7 +369,7 @@ Tracked as Gap Analysis item.
 | `tests/test_epo_search_vs_fetch.py` | Reproduces B2 missing from search results |
 | `tests/test_family_api.py` | Validates EPO family API call signature and response parsing |
 | `tests/test_formulation_snippets.py` | Regression tests for `_extract_formulation_snippets` — drug × keyword filter, alias matching, cap, JSON-serializability |
-| `eval_v0.py` | Excipient pipeline evaluation V0 — reads patent DB, extracts keyword-based ground truth, calls recommend API, computes P@k |
+| `tools/eval_v0.py` | Excipient pipeline evaluation V0 — reads patent DB, extracts keyword-based ground truth, calls recommend API, computes P@k. Run with `python -m tools.eval_v0`. |
 
 ---
 
@@ -380,6 +380,7 @@ Tracked as Gap Analysis item.
 - Re-running `main.py` is safe — patents already in `patents.db` take the `[DB hit]` path.
 - Claims text truncated at `CLAIMS_MAX_CHARS` (default 3000) — adjust in `config.py`.
 - `configs/` directory contains per-project config snapshots. `config.py` is always the active config.
+- `outputs/ground_truth/*.json` are evaluation artifacts — keep the first committed baseline, but do not re-commit every re-run (only metadata like timestamp / git_commit changes).
 
 ---
 
@@ -401,3 +402,20 @@ Useful for:
 - Debugging Task A extraction quality on individual patents
 
 See module docstring for usage examples.
+
+### `tools/eval_v0.py`
+
+Baseline evaluation script for the excipient recommendation pipeline.
+
+- Hardcoded input: 6 patents × Ampicillin × Lactose, Anhydrous
+- Reads patent text directly from `cache/patents.db`
+- Calls excipient recommend API (URL from `EXCIPIENT_API_URL` env var; defaults to internal service)
+- Computes ground truth via keyword substring match on patent text
+- Reports P@5 / P@10 using normalize-then-exact matching
+
+Run: `python -m tools.eval_v0`
+
+Kept immutable as a baseline. CSV-driven and dynamic-keyword variant
+planned as `tools/eval_v1.py` (Task F, spec only).
+
+See `docs/spec/task_E.md` for design rationale and V0 limitations.
