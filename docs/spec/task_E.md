@@ -8,6 +8,19 @@
 > It measures whether recommended excipients appear in real patent disclosures,
 > not whether they are optimal formulations.
 
+> **Post-implementation note (added after completion):**
+> 本 spec 寫的執行方式 `python eval_v0.py` 為 root-level placement。
+> 實作 commit 後依 PROJECT_SKILL §2 directory convention 調整到
+> `tools/eval_v0.py`，執行方式改為 `python -m tools.eval_v0`。
+>
+> 此外 spec 中提到的 hardcoded `api_groups=["Primary Amine"]` 在
+> 實作驗證階段移除——讓 API 自動透過 PubChem 偵測完整官能基組合
+> （`primary_amine, amide, lactam, carboxylic_acid`），結果才能對齊
+> 人工驗證表的 Test_No.1。
+>
+> Spec body 保留原樣以記錄 spec/implementation 落差，作為 LLM
+> 協作範本資料集的一部分。
+
 ---
 
 ## Overview
