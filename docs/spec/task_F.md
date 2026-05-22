@@ -4,60 +4,60 @@
 > 前置條件：Task E 完成，`tools/eval_v0.py` 已驗證 pipeline 機制可運作。
 > 完成後請更新 `docs/architecture.md`。
 
-**Post-implementation note (added after completion):**
-Implementation followed spec closely. Four points worth recording:
-
-1. `--api-groups` changed from single string to `nargs='+'` (list of
-  strings) to align with the recommend API's `list[str]` schema.
-  One-line diff, didn't warrant a separate spec. See excipient
-  pipeline API docs in project knowledge.
-
-2. STEP 2b's `OK: ... share tokens` line was removed after testing
-  showed it printed misleadingly on the `--force` bypass path
-  (claimed tokens were shared when guard had been bypassed).
-
-3. V1 P@5/P@10 (0.40 / 0.20) numerically equals V0's, but the hits
-  are completely different keywords:
-  - V0 hits in top 5: polymethacrylate, MCC
-  - V1 hits in top 5: MCC, polyethylene glycol
-  The matching numbers are coincidence, not evidence of equivalent
-  evaluation quality.
-
-4. Three compounding causes for V1 ground truth not expanding despite
-  31× larger candidate set (187 vs V0's 6):
-
-  a. **Narrower keywords (spec-predicted, see §V0→V1 Differences)**:
-      V0's hardcoded `"lactose"` caught all variants. V1's
-      `"lactose, anhydrous"` / `"anhydrous lactose"` misses bare
-      `"lactose"` mentions. Probe confirmed: 187-patent CSV has 6
-      patents containing `"lactose"` substring, but V1 matched 0 of
-      them.
-
-  b. **Candidate-set curation difference (NOT in spec)**: V0's 6
-      hardcoded patents = 3 auto-found + 3 manually-curated from
-      `ampicillin_formulation.md`. The patent that contributed V0's
-      polymethacrylate evidence (`US2013029965A1`) was manually added,
-      not from auto search, and is **NOT** in V1's CSV. V1 evaluates
-      a purely auto-derived candidate set, V0 evaluated a partially
-      human-curated one. The two are different universes.
-
-  c. **Abstract-only majority (architecture.md §EPO licensing)**:
-      Most of V1's 187 candidates are CN/US (no claims/examples
-      available). New candidates contribute thin evidence by volume.
-
-Per spec §Verification: "The verification does not claim P@k will
-improve over V0." V1 ships as pipeline-mechanics validation. The
-implicit thesis "candidate-set expansion → stronger ground truth" is
-partially refuted, but reasons (a) and (b) suggest the issue is in
-V1's design tradeoffs rather than ground truth being fundamentally
-unobtainable. Future tasks could:
-    - Add bare-noun fallback to keyword derivation (offsets cause a)
-    - Use `ampicillin_formulation.md` as a curated seed set (task_G,
-      addresses cause b)
-    - Wait for Google Patents fulltext integration (offsets cause c)
-
-本 spec 保留原樣以記錄 spec/implementation/reality 落差，作為 LLM
-協作範本資料集的一部分。
+> **Post-implementation note (added after completion):**
+> Implementation followed spec closely. Four points worth recording:
+>
+> 1. `--api-groups` changed from single string to `nargs='+'` (list of
+>   strings) to align with the recommend API's `list[str]` schema.
+>   One-line diff, didn't warrant a separate spec. See excipient
+>   pipeline API docs in project knowledge.
+>
+> 2. STEP 2b's `OK: ... share tokens` line was removed after testing
+>   showed it printed misleadingly on the `--force` bypass path
+>   (claimed tokens were shared when guard had been bypassed).
+>
+> 3. V1 P@5/P@10 (0.40 / 0.20) numerically equals V0's, but the hits
+>   are completely different keywords:
+>   - V0 hits in top 5: polymethacrylate, MCC
+>   - V1 hits in top 5: MCC, polyethylene glycol
+>   The matching numbers are coincidence, not evidence of equivalent
+>   evaluation quality.
+>
+> 4. Three compounding causes for V1 ground truth not expanding despite
+>   31× larger candidate set (187 vs V0's 6):
+>
+>   a. **Narrower keywords (spec-predicted, see §V0→V1 Differences)**:
+>       V0's hardcoded `"lactose"` caught all variants. V1's
+>       `"lactose, anhydrous"` / `"anhydrous lactose"` misses bare
+>       `"lactose"` mentions. Probe confirmed: 187-patent CSV has 6
+>       patents containing `"lactose"` substring, but V1 matched 0 of
+>       them.
+>
+>   b. **Candidate-set curation difference (NOT in spec)**: V0's 6
+>       hardcoded patents = 3 auto-found + 3 manually-curated from
+>       `ampicillin_formulation.md`. The patent that contributed V0's
+>       polymethacrylate evidence (`US2013029965A1`) was manually added,
+>       not from auto search, and is **NOT** in V1's CSV. V1 evaluates
+>       a purely auto-derived candidate set, V0 evaluated a partially
+>       human-curated one. The two are different universes.
+>
+>   c. **Abstract-only majority (architecture.md §EPO licensing)**:
+>       Most of V1's 187 candidates are CN/US (no claims/examples
+>       available). New candidates contribute thin evidence by volume.
+>
+> Per spec §Verification: "The verification does not claim P@k will
+> improve over V0." V1 ships as pipeline-mechanics validation. The
+> implicit thesis "candidate-set expansion → stronger ground truth" is
+> partially refuted, but reasons (a) and (b) suggest the issue is in
+> V1's design tradeoffs rather than ground truth being fundamentally
+> unobtainable. Future tasks could:
+>     - Add bare-noun fallback to keyword derivation (offsets cause a)
+>     - Use `ampicillin_formulation.md` as a curated seed set (task_G,
+>       addresses cause b)
+>     - Wait for Google Patents fulltext integration (offsets cause c)
+>
+> 本 spec 保留原樣以記錄 spec/implementation/reality 落差，作為 LLM
+> 協作範本資料集的一部分。
 
 ---
 
