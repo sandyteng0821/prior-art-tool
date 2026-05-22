@@ -451,7 +451,8 @@ def main() -> None:
         "Pre-Task-D backfill state; 16 parents (out of 187 patents) were "
         "fetched before May 2026 family expansion filter widening and may "
         "have missing TW/KR/AU/JP A-series sibling patents. "
-        "See architecture.md Gap Analysis 3f."
+        "See architecture.md Gap Analysis 3f. "
+        "Ground truth source design: see docs/ampicillin_ground_truth_notes.md"
     )
 
     with open(out_path, "w") as f:
