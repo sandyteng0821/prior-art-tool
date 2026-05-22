@@ -359,6 +359,7 @@ Tracked as Gap Analysis item.
 | 2026-05 | Acetaminophen × formulation evidence | `configs/acetaminophen_formulation_evidence.py` | — | Task A + C verified | snippet extraction added (Task A); Task C investigation reclassified `_fetch_claims` 404 as EPO licensing limit (non-EP) and fixed keyword stem bug; EP2089013B1 verified end-to-end |
 | 2026-05 | Pemirolast × IPF (re-audit) | `configs/pemirolast_ipf.py` | — | Bug X verified | family expansion filter widened (B1/B2 → {B1,B2,A1,A2,A}); self-reference skip added; WO2023073600A1 family now correctly recovers TW202328118A + KR20230062785A; backfill of pre-May-2026 parents pending |
 | 2026-05 | Ampicillin × formulation evidence | `configs/ampicillin_formulation_evidence.py` | 188 | Task E verified | Excipient pipeline eval V0; top 10 recommendations match manual test table; P@5=0.40 P@10=0.20 (abstract-only ground truth, biased low by design) |
+| 2026-05 | Ampicillin × formulation evidence (V1) | `configs/ampicillin_formulation_evidence.py` | 187 | Task F verified | Excipient pipeline eval V1 (CSV-driven); P@5=0.40 P@10=0.20 numerically equal to V0 but hits different keywords (V0: polymethacrylate+MCC, V1: MCC+PEG). Coincidence, not equivalence. Three compounding causes documented in task_F.md post-impl note. Pipeline mechanics validated. |
 
 ---
 
@@ -370,6 +371,7 @@ Tracked as Gap Analysis item.
 | `tests/test_family_api.py` | Validates EPO family API call signature and response parsing |
 | `tests/test_formulation_snippets.py` | Regression tests for `_extract_formulation_snippets` — drug × keyword filter, alias matching, cap, JSON-serializability |
 | `tools/eval_v0.py` | Excipient pipeline evaluation V0 — reads patent DB, extracts keyword-based ground truth, calls recommend API, computes P@k. Run with `python -m tools.eval_v0`. |
+| `tools/eval_v1.py` | Excipient pipeline evaluation V1 (CSV-driven) — same pipeline as V0 but reads patent list from `--csv`, derives keyword list dynamically from recommend API top 10, adds typo guard. Run with `python -m tools.eval_v1 --csv ... --drug ... --target-excipient ...`. |
 
 ---
 
@@ -416,6 +418,27 @@ Baseline evaluation script for the excipient recommendation pipeline.
 Run: `python -m tools.eval_v0`
 
 Kept immutable as a baseline. CSV-driven and dynamic-keyword variant
-planned as `tools/eval_v1.py` (Task F, spec only).
+implemented as `tools/eval_v1.py` (Task F).
 
 See `docs/spec/task_E.md` for design rationale and V0 limitations.
+
+### `tools/eval_v1.py`
+
+CSV-driven evolution of `eval_v0.py`. Same 5-step pipeline; differs in
+input layer only.
+
+- Patent list from `--csv` (xlsx/csv with `patent_id` column) instead of
+  hardcoded list
+- Keyword list derived dynamically from recommend API top 10 + `ABBREVIATIONS`
+  map (no hand-curated list per run)
+- Typo guard: compares `--target-excipient` against API's `matched_as`;
+  exits if they share no tokens (`--force` to bypass)
+- CLI args: `--csv`, `--drug`, `--target-excipient`, `--api-groups`
+  (nargs='+'), `--k`, `--force`
+
+Run: `python -m tools.eval_v1 --csv output/gap_analysis_*.xlsx \`
+`     --drug Ampicillin --target-excipient "Lactose, Anhydrous"`
+
+See `docs/spec/task_F.md` for design rationale, the V0→V1 differences
+table, and the post-implementation note recording where V1's empirical
+results diverged from spec expectations.
