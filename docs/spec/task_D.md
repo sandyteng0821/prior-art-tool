@@ -5,6 +5,117 @@
 > 完成後請更新 `docs/architecture.md`。
 
 ---
+ 
+## Retrospective Note (added post-probe, 2026-05-25)
+ 
+> Pre-implementation probe (`scratch/probe_task_d.py`) ran before any code. Four
+> spec premises moved; spec body below preserved unedited per PROJECT_SKILL §6
+> ("Specs are immutable; lessons go in retrospective notes"). Implementation
+> reflects the corrections in this note, NOT the original Case 1 / Case 2 split
+> in the spec body.
+ 
+**1. Case 1 framing was wrong.** The 4 hard-coded IDs (`EP2443120B1`,
+`EP2107907B1`, `EP1285921B1`, `NO20210693B1`) are not "members with
+`family_of = NULL`" as the spec implies. Probe shows all four are
+`family_fetched=0` with zero children in DB. They are parent rows that
+have simply never been family-expanded. There is no schema-evolution
+problem here — there is a "this row was fetched before family-fetch was
+wired in" problem.
+ 
+   Implication: Case 1 is mechanically identical to Case 2. The
+   implementation collapses them: one candidate set
+   (`family_fetched=1 pre-May parents` ∪ `4 hard-coded IDs`), one
+   trigger path (`_get_or_fetch`). The `UPDATE family_fetched=0` step
+   is a no-op for the 4 Case-1 IDs (already 0) and only fires for
+   Case-2 rows.
+ 
+**2. Case 2 SQL had an operator-precedence bug.** Spec's SQL
+ 
+   ```sql
+   ... AND patent_id LIKE '%A1' OR patent_id LIKE '%A2'
+   ```
+ 
+   parses as `(A AND B) OR C` and returned 389 rows; the parenthesized
+   form returned 318. Implementation uses parentheses.
+ 
+**3. No `family::*` diskcache namespace exists.** Spec instructs
+   "clear relevant diskcache key." Inspecting `cache/epo` keys shows
+   only `search::*`, `title::*`, `abstract::*`, `claims::*` (the per-
+   endpoint fetch caches). The family API call in
+   `_fetch_and_store_family` is not cached at all. Implementation
+   skips the cache-invalidation step.
+ 
+**4. Scope estimate was low.** Spec risk section estimated 50–200
+   parents for Case 2; actual is 318 (DB-wide). Distribution:
+   Acetaminophen 163, Pemirolast 139, Ampicillin 16. The `--max`
+   default needs to be set with this in mind (proposed: 100 for the
+   family backfill, so a full sweep is 4 batches).
+ 
+**5. Case 3 (snippet backfill) scope: 1857 NULL rows, but only 485
+   have non-empty `claims` or `examples_extracted`.** The remaining
+   1372 will get `"[]"` written. This is still useful (distinguishes
+   "processed, no evidence" from NULL "never processed") but the
+   "snippet coverage uplift" headline number is 485, not 1857.
+ 
+**6. Snippets extraction path: `_collect_snippets`, not concat.**
+   Spec text suggested `_extract_formulation_snippets(claims + " " + examples, aliases)`.
+   Implementation calls a backfill-local mirror of production's
+   `_collect_snippets()` (claims and examples treated as separate
+   sources, each with cap 20, combined hard-cap 30, JSON-encoded).
+   This matches `modules/patent_fetcher.py` write paths exactly, so a
+   backfilled row is shape-identical to a freshly fetched row.
+ 
+**7. `abstract` not used as snippet source.** Production write paths
+   do not pass `abstract` into `_collect_snippets`. Backfill mirrors
+   this. US/CN/EA/KR rows therefore remain `[]` after backfill (see
+   PROJECT_SKILL §4.1). Enabling abstract is a separate enhancement,
+   not Task D scope.
+ 
+**8. Out-of-scope discovery → resolved as historical artifact.** During
+   `--null-count` audit on 2026-05-25, Apremilast project (first run
+   2026-05-21, post-Task-A) appeared to have 2 NULL `formulation_snippets`
+   rows. Initially suspected as a current production bug (see
+   `bug_Z_silent_null_snippets.md`, since renamed to
+   `bug_Z_resolved.md`), the investigation showed:
+ 
+   - Those 2 rows were shared with Roflumilast project via overlapping
+     search hits — they were originally written by Roflumilast family
+     expansion in 2026-03/04, not by Apremilast.
+   - Apremilast's own 244 patent rows (written 2026-05-21+) were all
+     correctly populated (55 non-empty, 187 `"[]"`, 0 NULL).
+   - The `--null-provenance` inspector subcommand (added during
+     investigation) confirmed: of the 277 remaining NULL rows after
+     Phase 1 backfill, **all 277 pre-date Task A merge**. Newest is
+     2026-05-12, oldest is 2026-03-23.
+   **Conclusion: Bug Z is historical, not current.** Task A itself
+   fixed the underlying `_fetch_and_store_family()` snippet-omission
+   path. The 277 residual NULL rows are pre-fix residue, to be
+   incidentally cleared by Phase 2 family backfill.
+ 
+**9. Phase 1 execution outcome (2026-05-25).** 5 projects backfilled
+   in priority order (Apremilast → Ampicillin → Pemirolast →
+   Acetaminophen → Roflumilast). All runs succeeded with no crashes,
+   no scope violations, audit log clean.
+ 
+   | Project | rows | non_empty | comment |
+   |---|---|---|---|
+   | Apremilast | 2 | 0 | shared with Roflumilast historical NULL |
+   | Ampicillin | 148 | 3 | evidence-sparse |
+   | Pemirolast | 258 | 12 | evidence-sparse (low alias coverage) |
+   | Acetaminophen | 527 | 66 | evidence-dense |
+   | Roflumilast | 645 | 33 | mixed |
+   | **Total** | **1580** | **114** | |
+ 
+   DB-wide NULL: 1857 → 277 (drop of 1580; matches per-project sum).
+   Remaining 277 are orphan rows (no `search_log` attribution),
+   all pre-Task-A — to be handled in Phase 2.
+ 
+   Per-project `non_empty` rate (3% Pemirolast, 12.5% Acetaminophen)
+   confirms what PROJECT_SKILL §4.6 noted: evidence density varies
+   sharply by drug. Pemirolast × IPF is genuinely sparse; the low
+   P@k in V1 eval is not a model artifact, it's a corpus reality.
+ 
+---
 
 ## Context
 

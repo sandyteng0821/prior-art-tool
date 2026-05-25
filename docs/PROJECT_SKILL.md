@@ -307,8 +307,19 @@ Recorded for personal LLM-collaboration research dataset.
 | **User + LLM co-write spec** | Task D | User noticed audit-trail gap; iterated with LLM to add `backfill_log` table to spec. Implementation pending. |
 | **Spec assumption collapse → reject** | "Task E rejected portion" (inspect description fetch) | LLM spec assumed EPO has US fulltext. Probe disproved. Spec abandoned, replaced with 5-line Espacenet URL patch. No spec committed. |
 | **Tool reveals systemic bug** | `inspect_patent` revealing Bug X | Tool built for evidence verification incidentally exposed family expansion filter bug that had been silent for months. Pipeline-level bug found via exploration, not via spec. |
+| **Probe → spec-restructure (not reject)** | Task D | Pre-implementation probe (`scratch/probe_task_d.py`) showed Case 1 framing was wrong (4 IDs are `family_fetched=0` parents, not legacy members with NULL `family_of`), spec's Case 2 SQL had a precedence bug (71 spurious rows), and `family::*` diskcache invalidation was a no-op. Spec body preserved per §6; implementation collapsed Case 1 → Case 2 with a retrospective note explaining the corrections. Distinct from Task C ("spec error → user pushback → redirect", where the fix was a 1-keyword change) and the rejected Task E portion ("spec assumption collapse → reject", where the task was abandoned). Here the underlying need (backfill pre-May parents) was real and confirmed by probe (318 candidates DB-wide); only the spec's internal taxonomy was wrong. |
+| **Operation surfaces apparent bug → probe resolves in same session** | Task D execution → Bug Z (resolved) | During Task D backfill execution, `--null-count` revealed that the Apremilast project (first run 2026-05-21, post-Task-A) had 2 NULL `formulation_snippets` rows where spec said none should exist. User flagged this as potential scope creep before running apply. Two-track response: (a) Task D backfill still processed those rows for DB consistency, (b) `bug_Z_silent_null_snippets.md` opened to investigate. Subsequent inspector enhancement (`--null-provenance`) showed all 277 remaining NULL rows pre-date Task A merge (newest 2026-05-12, oldest 2026-03-23). Bug Z reclassified as historical artifact, file renamed `bug_Z_resolved.md`, no fix needed. Lesson: spec evolution should wait on probe data; the right discipline is `fetched_at`-bucketed audit before grepping code. |
 
 **Meta-observation:** LLM collaboration quality varies by *what kind of task it is*. Spec-driven implementation works well for additive features. Diagnosis-heavy work (bugs, edge cases) benefits from human-driven probe + LLM verification, not LLM-driven hypothesis generation.
+
+> Probe-driven correction also helps distinguish "spec wrong in detail
+> but task still valid" (Task D) from "spec wrong because task itself
+> doesn't make sense" (Task E rejected portion); both look the same
+> until the probe runs. A third variant — "execution surfaces apparent
+> bug, but probe resolves it as historical artifact" (Bug Z in same
+> Task D session) — shows that the discipline of inspecting `fetched_at`
+> distribution before grepping code can short-circuit a multi-day
+> investigation into a 30-second SQL.
 
 ---
 
