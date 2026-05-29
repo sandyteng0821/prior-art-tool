@@ -101,7 +101,8 @@ graph TD
 | Query Builder | `modules/query_builder.py` | Generate EPO CQL search strings (Strategy A, D, + CUSTOM_QUERIES) |
 | Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, extract formulation snippets, auto-upgrade A1→B1, expand family (cross-jurisdiction A-series included) |
 | Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; formulation snippet storage; cross-project persistent store |
-| LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring |
+| LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring; Supports reasoning models (GPT-5, o3) via _make_llm() — auto-detects 
+temperature support and token budget. |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 | Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
 
@@ -218,6 +219,8 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ❌ Open | bio team schema mismatch |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
 | 10 | No REST API endpoint | new `api/` layer | **P3** | ❌ Open | bio team integration |
+| 11 | Reasoning model token budget may need tuning | `llm_analyzer.py` | **P3** | ⚠️ Partial | 
+GPT-5 screening=4000, analysis=8000; some patents still fail if reasoning chain is long |
 
 ### Roadmap
 

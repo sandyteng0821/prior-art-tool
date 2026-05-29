@@ -130,10 +130,25 @@ analysis_prompt = ChatPromptTemplate.from_messages([
 ])
 
 # ── Chains（只在 USE_LLM=True 時初始化，避免沒有 API key 時 crash） ──────────
+NO_TEMPERATURE_MODELS = {"o3-mini", "o3", "o4-mini", "gpt-5", "gpt-5-mini"}
+
+# Reasoning models 需要更大的 token budget
+REASONING_MODEL_TOKENS = {
+    "screening": 4000,   # 原本 120
+    "analysis":  8000,   # 原本 400
+}
+
+def _make_llm(model: str, role: str):
+    is_reasoning = model in NO_TEMPERATURE_MODELS
+    max_tokens = REASONING_MODEL_TOKENS[role] if is_reasoning else (120 if role == "screening" else 400)
+
+    if is_reasoning:
+        return ChatOpenAI(model=model, max_tokens=max_tokens)
+    return ChatOpenAI(model=model, temperature=0, max_tokens=max_tokens)
 
 if USE_LLM:
-    screening_llm = ChatOpenAI(model=SCREENING_MODEL, temperature=0, max_tokens=120)
-    analysis_llm  = ChatOpenAI(model=ANALYSIS_MODEL,  temperature=0, max_tokens=400)
+    screening_llm = _make_llm(SCREENING_MODEL, "screening")
+    analysis_llm  = _make_llm(ANALYSIS_MODEL, "analysis")
     screening_chain = screening_prompt | screening_llm.with_structured_output(ScreeningResult)
     analysis_chain  = analysis_prompt  | analysis_llm.with_structured_output(PatentAnalysis)
 
