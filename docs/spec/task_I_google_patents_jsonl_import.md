@@ -200,6 +200,78 @@ Task I scope).
 
 ---
 
+## Operating Notes — Backfilling Additional Projects
+
+The initial run (2026-06) processed only the Pemirolast project. The
+JSONL import affects rows across multiple projects in the DB, but
+`backfill_snippets` requires explicit per-project aliases (safety rail
+in `scripts/backfill_snippets.py` — see `task_D.md` §"Safety rail").
+To process additional projects after a Task I import:
+
+### Step 1: Identify which projects gained content from the import
+
+```bash
+python3 -c "
+import sqlite3
+conn = sqlite3.connect('cache/patents.db')
+for r in conn.execute('''
+    SELECT sl.project, COUNT(DISTINCT p.patent_id) AS imported_rows
+    FROM patents p
+    JOIN search_log sl ON sl.patent_id = p.patent_id
+    WHERE p.source IN (\"google_patents\", \"mixed_epo_google_patents\")
+    GROUP BY sl.project ORDER BY imported_rows DESC
+'''):
+    print(r)
+"
+```
+
+This shows how many imported rows are tied to each project — useful for
+deciding which projects are worth a re-extraction pass.
+
+### Step 2: For each project worth processing
+
+Look up the project's drug aliases from its `configs/<project>.py`
+snapshot (the `DRUG_ALIASES` constant), then:
+
+```bash
+# Dry-run first to see candidate count
+python -m scripts.backfill_snippets \
+  --project '<exact project name from search_log>' \
+  --aliases <alias1> <alias2> <alias3> ... \
+  --dry-run
+
+# Reasonable count? Apply:
+python -m scripts.backfill_snippets \
+  --project '<exact project name>' \
+  --aliases <alias1> <alias2> ... \
+  --apply
+```
+
+### Gotchas (verified the hard way during initial run)
+
+- **Project name must match `search_log.project` exactly.** The names
+  contain Chinese characters, underscores, and parentheses. Wrap in
+  single quotes in bash. Wrong name → `candidates: 0 row(s)`.
+- **Aliases must match the project's drug.** Using wrong aliases (e.g.
+  current `config.py`'s aliases on a historical project) will write
+  `'[]'` (false-negative snippets). The safety rail blocks this when
+  `alias_source = config_default`; the workaround is explicit
+  `--aliases`. See Lifecycle Note above for recovery if you write
+  wrong `'[]'`.
+- **Re-running for the same project is safe.** Candidate filter is
+  `formulation_snippets IS NULL`; already-processed rows are skipped.
+- **Small projects (< 5 imported rows) may not be worth the per-run
+  setup.** Defer until that project is actively used.
+
+### Future improvement (not in this task)
+
+Add `--project-config <path>` flag to `backfill_snippets` that auto-loads
+`DRUG_ALIASES` from the named config file. Would eliminate manual alias
+typing and the wrong-aliases failure mode. Tracked as informal future
+work; not yet a task spec.
+
+---
+
 ## Lifecycle Note — Why `formulation_snippets` is reset on import
 
 Discovered during apply phase: 406 rows that should have been
