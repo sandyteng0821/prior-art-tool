@@ -8,3 +8,10 @@ __pycache__/
 modules/archive/
 scratch/
 logs/
+
+# Task I runtime artifacts
+backfill_final.log
+backfill_final.pid
+global_patents_archive.jsonl
+global_patents_optimized.csv
+data/
