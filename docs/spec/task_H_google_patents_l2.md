@@ -2,6 +2,32 @@
 
 > 完成後請更新 `docs/architecture.md`。
 
+## Status: Superseded by Task I (2026-06-03)
+ 
+原 spec 假設 Google Patents scraping 在 production 機器執行,核心設計決策
+(fetcher/backfill 兩層拆分、rate limit、熔斷、ToS 姿態) 都繞著「如何讓
+production 機器安全地 hit Google Patents」打轉。
+ 
+實際評估後因公司 IT policy 對 automated HTTP scraping 的網路層風險顧慮,
+改採 **off-machine (Kaggle) scrape + JSONL import** 模式。Production
+機器不再對 Google Patents 發出任何 HTTP request,改為讀取 Kaggle notebook
+產出的 JSONL artifact 寫進 SQLite cache。
+ 
+[Task I](task_I_google_patents_jsonl_import.md) 取代本 spec 的 fetcher +
+backfill 兩層設計,只保留 importer。
+ 
+保留本檔的價值:
+- 記錄了當時為什麼考慮 fetcher/backfill 兩層 (risk isolation 推理),
+  以及為什麼這個推理在 off-machine 模式下不適用
+- 記錄了 EPO OPS 缺口的完整 context (PatentsView/ODP/PPUBS 都不通的證據)
+- 「Open decision: description 寫進哪個欄位」的選項分析仍有效
+  (Task I 採用「寫進 `examples_extracted`,免 schema migration」這個選項)
+- 未來若需求變成 interactive 即時查詢 (不是 batch screening),需要恢復
+  in-process fetcher 路徑,這份 spec 是起點
+符合 PROJECT_SKILL §"Don't push spec forward when probe reveals 假設崩塌":
+Task H 核心假設 (production 機器 scrape 可行) 在 review 階段崩塌,正確
+做法是承認、記錄、開新 task,而非把新方案塞進舊 spec 的殼裡。
+
 ---
 
 ## Context

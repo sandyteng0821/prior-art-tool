@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2026-05 (Task E: excipient pipeline eval V0)
+> Last updated: 2026-06 (Task I: Google Patents JSONL import)
 
 ---
 
@@ -14,8 +14,8 @@ Each phase has a distinct responsibility and a clear handoff to the next.
 > for the strategic context behind the formulation evidence subsystem
 > (snippet extraction, two-layer analysis, why not store full description).
 > 
-> 📄 **Active task specs:** See [`./spec/task_A.md`](./spec/task_A.md) through [`./spec/task_E.md`](./spec/task_E.md)
-> for individual feature/fix specs.
+> 📄 **Active task specs:** See [`./spec/task_A.md`](./spec/task_A.md) through [`./spec/task_I.md`](./spec/task_I_google_patents_jsonl_import.md)
+> for individual feature/fix specs. Task H is superseded by Task I (see note in task_H file).
 
 ---
 
@@ -58,6 +58,7 @@ graph TD
         SEARCH["Query Interface\nsearch_examples()  search_claims()\nget_formulation_snippets()  stats()"]
         FAMILY_TRACK["✅ Family tracking\nfamily_fetched: 0/1 flag\nfamily_of: parent A1 reference\nmark_family_fetched()\nget_family_members()"]
         EXPIRY["⚠ Expiry Date  MISSING\nstatus = Unknown fallback"]
+        GP_IMPORT["✅ Task I  IMPLEMENTED\nimport_google_patents_jsonl.py\nKaggle JSONL → cache\nsource = google_patents | mixed_epo_google_patents"]
     end
 
     PARSE --> DB
@@ -87,6 +88,7 @@ graph TD
     style FAMILY fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style FAMILY_TRACK fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style EXPIRY fill:#3a1a1a,stroke:#f85149,color:#f85149
+    style GP_IMPORT fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style SCHEMA fill:#2a200a,stroke:#d29922,color:#d29922
     style SNIP fill:#1a3a1a,stroke:#3fb950,color:#3fb950
 ```
@@ -101,10 +103,10 @@ graph TD
 | Query Builder | `modules/query_builder.py` | Generate EPO CQL search strings (Strategy A, D, + CUSTOM_QUERIES) |
 | Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, extract formulation snippets, auto-upgrade A1→B1, expand family (cross-jurisdiction A-series included) |
 | Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; formulation snippet storage; cross-project persistent store |
-| LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring; Supports reasoning models (GPT-5, o3) via _make_llm() — auto-detects 
-temperature support and token budget. |
+| LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring; Supports reasoning models (GPT-5, o3) via _make_llm() — auto-detects temperature support and token budget. |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 | Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
+| Importer | scripts/import_google_patents_jsonl.py | One-off import of Google Patents fulltext from a JSONL artifact (scraped off-machine on Kaggle). Targets non-EP/WO rows in the artifact whose claims are currently empty. Only those rows are touched; EP/WO and EPO-populated rows are not overwritten. See Task I. |
 
 ---
 
@@ -152,12 +154,16 @@ temperature support and token budget. |
 | EP application (A1/A2) | ✅ | ❌ | partial | ✅ representative |
 | US application (A1) | ✅ | ❌¹ | ❌¹ | ✅ representative |
 | US granted (B1/B2) | ✅ | ❌¹ | ❌¹ | ⚠️ not in search, found via family API |
-| WO / AU / CN / MX | partial | ❌¹ | ❌¹ | partial |
+| WO / AU / CN / MX | partial | ❌¹/✅² | ❌¹/✅² | partial |
 
 ¹ EPO OPS subscription does not include fulltext (claims/description) for
 non-EP jurisdictions. Returns HTTP 404. This is a data licensing limit,
 not a code bug. Verified 2026-05 via Task C probe matrix across EP/US/CN
 patents × Epodoc/Docdb/Original model classes.
+
+² Google Patents JSONL supplement (Task I, 2026-06) provides claims/
+examples for rows in the Kaggle scrape batch. Coverage is per-batch,
+not automatic.
 
 **Key insight from Pemirolast × IPF validation:**
 EPO search returns the **representative publication** of a patent family (usually A1).
@@ -178,7 +184,7 @@ CREATE TABLE patents (
     formulation_snippets TEXT,    -- JSON list: drug × keyword sentences (≤30)
     status               TEXT,
     year                 TEXT,
-    source               TEXT,
+    source               TEXT,   -- 'epo' / 'google_patents' / 'mixed_epo_google_patents' (Task I)
     fetched_at           TEXT,
     family_fetched       INTEGER DEFAULT 0,
     family_of            TEXT
@@ -215,7 +221,7 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
 | 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ❌ Open | status = Unknown fallback |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
-| 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion now recovers cross-jurisdiction siblings (3g). Orphan patents (no EP/US family member found by query) still missed — needs mechanism-based or full-text query strategy (Bug Y). |
+| 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) now cover most cases. Orphan patents (no EP/US family member found by query, and not in Google scrape) still missed — needs mechanism-based or full-text query strategy (Bug Y). |
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ❌ Open | bio team schema mismatch |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
 | 10 | No REST API endpoint | new `api/` layer | **P3** | ❌ Open | bio team integration |
@@ -294,6 +300,20 @@ fulltext — the restriction is at EPO's data layer, not in our client.
 Future option: integrate a separate fulltext source (e.g. Google Patents
 Public Datasets) for US/CN coverage. Out of scope for current iteration.
 
+**Supplement path (implemented 2026-06, Task I):**
+
+For non-EP fulltext, an off-machine scraper (Kaggle notebook) produces a
+JSONL artifact; `scripts/import_google_patents_jsonl.py` writes that
+content back into the cache. **The scope is whichever rows are in the
+JSONL — not all non-EP rows in the DB.** Affected rows are tagged with
+`source = 'google_patents'` (or `mixed_epo_google_patents` for hybrid
+rows where claims came from Google but examples remained from EPO).
+
+Coverage as of 2026-06 (Pemirolast project, 369 rows total): 168 rows
+imported from Google Patents, 151 already had EPO content, 50 remain
+empty (Google had no content either, or are EP/WO rows EPO didn't
+capture).
+
 ---
 
 ### Incomplete Family Coverage
@@ -363,6 +383,7 @@ Tracked as Gap Analysis item.
 | 2026-05 | Pemirolast × IPF (re-audit) | `configs/pemirolast_ipf.py` | — | Bug X verified | family expansion filter widened (B1/B2 → {B1,B2,A1,A2,A}); self-reference skip added; WO2023073600A1 family now correctly recovers TW202328118A + KR20230062785A; backfill of pre-May-2026 parents pending |
 | 2026-05 | Ampicillin × formulation evidence | `configs/ampicillin_formulation_evidence.py` | 188 | Task E verified | Excipient pipeline eval V0; top 10 recommendations match manual test table; P@5=0.40 P@10=0.20 (abstract-only ground truth, biased low by design) |
 | 2026-05 | Ampicillin × formulation evidence (V1) | `configs/ampicillin_formulation_evidence.py` | 187 | Task F verified | Excipient pipeline eval V1 (CSV-driven); P@5=0.40 P@10=0.20 numerically equal to V0 but hits different keywords (V0: polymethacrylate+MCC, V1: MCC+PEG). Coincidence, not equivalence. Three compounding causes documented in task_F.md post-impl note. Pipeline mechanics validated. |
+| 2026-06 | Pemirolast × IPF (Google Patents supplement) | `configs/pemirolast_ipf.py` | 369 | Task I verified | 408 of ~3954 non-EP/WO rows in DB received supplemental fulltext (the rest were not in the scrape scope or had no Google content); Pemirolast project claims coverage delta: CN 0→108, US 0→20, JP 0→16, KR 0→8. 168/168 rows re-extracted by backfill_snippets (26 yielded non-empty formulation snippets). |
 
 ---
 
@@ -386,6 +407,10 @@ Tracked as Gap Analysis item.
 - Claims text truncated at `CLAIMS_MAX_CHARS` (default 3000) — adjust in `config.py`.
 - `configs/` directory contains per-project config snapshots. `config.py` is always the active config.
 - `outputs/ground_truth/*.json` are evaluation artifacts — keep the first committed baseline, but do not re-commit every re-run (only metadata like timestamp / git_commit changes).
+- For non-EP fulltext (US/CN/KR/JP/EA), Google Patents supplement is
+  available via `scripts/import_google_patents_jsonl.py`. The scraper
+  runs off-machine on Kaggle; JSONL artifact is gitignored. See
+  [Task I](spec/task_I_google_patents_jsonl_import.md).
 
 ---
 
