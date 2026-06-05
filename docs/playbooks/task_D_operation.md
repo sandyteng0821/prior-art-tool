@@ -189,6 +189,54 @@ so even an "ideal" backfill would write `[]` for the majority.
 
 ## 5 · Family backfill (when `backfill_family.py` ships)
 
+### Pre-implementation anchor (added 2026-06-05)
+
+A coverage probe on the Pemirolast project (post-Task-I) surfaced
+**44 EP rows that are all-three-empty** (no abstract, claims, or
+examples_extracted). Breakdown:
+
+- **42/44 have `family_fetched=0`** — Pemirolast Case-2 candidates
+  (subset of the 139 estimated in task_D retrospective §4). EP family
+  members brought in by the family API metadata pass but whose own
+  family expansion never ran. Expected to clear when
+  `backfill_family.py` runs.
+- **2/44 have `family_fetched=1`** — `EP2443120A2` and `EP2107907A1`.
+  These are A-series members of Case-1 hard-coded parents
+  (`EP2443120B1`, `EP2107907B1` per `inspect_backfill_log.py`
+  `case1_ids`). Their parents have been re-expanded; the A-series
+  members exist with title + `family_of` but EPO returns no fulltext
+  for these `A1` / `A2` kind codes (licensing limitation, not a
+  backfill gap).
+
+#### Use as verification anchor
+
+Run `tools/probe_coverage_v2.py` against the Pemirolast risk-analysis
+CSV before AND after backfill:
+
+```bash
+python -m tools.probe_coverage_v2 \
+    --csv output/gap_analysis_<latest>.csv \
+    --query 3
+```
+
+In the Q3 output, the row `juris=EP, source=epo`:
+
+- **Before backfill:** `all3_∅ = 44` (baseline as of 2026-06-05)
+- **After backfill:** expect `all3_∅ = 2` (EP2443120A2 + EP2107907A1
+  residue; EPO licensing limit, not a backfill failure)
+
+If post-backfill count > 2, some Case-2 EP candidates did not
+re-expand. Investigate before declaring backfill complete.
+
+#### Out of scope for backfill
+
+`EP2443120A2` and `EP2107907A1` will remain all_three_empty after
+backfill. Do not treat them as backfill failures. If their fulltext
+is needed for downstream analysis, the only path is a Task-I-style
+external scrape supplement.
+
+---
+
 *(Pending implementation — placeholder. Will be filled in when
 `scripts/backfill_family.py` is shipped per task_D.md Implementation
 Order step 3-5.)*
