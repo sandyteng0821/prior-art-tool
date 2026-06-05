@@ -225,8 +225,7 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ❌ Open | bio team schema mismatch |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
 | 10 | No REST API endpoint | new `api/` layer | **P3** | ❌ Open | bio team integration |
-| 11 | Reasoning model token budget may need tuning | `llm_analyzer.py` | **P3** | ⚠️ Partial | 
-GPT-5 screening=4000, analysis=8000; some patents still fail if reasoning chain is long |
+| 11 | Reasoning model token budget may need tuning | `llm_analyzer.py` | **P3** | ⚠️ Partial | GPT-5 screening=4000, analysis=8000; some patents still fail if reasoning chain is long |
 
 ### Roadmap
 
@@ -470,3 +469,26 @@ Run: `python -m tools.eval_v1 --csv output/gap_analysis_*.xlsx \`
 See `docs/spec/task_F.md` for design rationale, the V0→V1 differences
 table, and the post-implementation note recording where V1's empirical
 results diverged from spec expectations.
+
+### `tools/probe_coverage_v2.py`
+
+Read-only coverage audit for `cache/patents.db`, scoped to a
+risk-analysis CSV's patent id set.
+
+- Reads patent_ids from a `gap_analysis_*.csv` and joins to `patents`
+  via `IN (subquery)` (not JOIN — see doc for fan-out rationale)
+- Reports four views: channel × state (Q1), source × channel (Q2),
+  jurisdiction × source × empty (Q3), CSV health audit (Q4)
+- Read-only via SQLite URI mode; cannot mutate the DB
+
+Useful for:
+- Single-project coverage summary (e.g. post-Task-I sanity check)
+- Cross-project comparison as proxy baseline when no DB snapshot exists
+- Identifying all-three-empty rows as stable-score anchors for risk
+  analysis re-runs
+
+Run: `python -m tools.probe_coverage_v2 --csv output/gap_analysis_*.csv`
+
+See `tools/probe_coverage_v2.md` for user guide, SQL idiom explanations
+(pandas-translated), data flow diagram, and maintainer tripwires.
+First reference report: `output/coverage_report_pemirolast_20260605.md`.
