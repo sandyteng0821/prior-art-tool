@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2026-06 (Task I: Google Patents JSONL import)
+> Last updated: 2026-06-15 (coverage table: biblio endpoint probe; inspect_patent sandbox fix)
 
 ---
 
@@ -148,13 +148,16 @@ graph TD
 
 ## EPO OPS Data Coverage
 
-| Patent Type | title/abstract | claims | description/examples | Search indexing |
-|-------------|:--------------:|:------:|:--------------------:|:---------------:|
+| Patent Type | biblio (title/abstract) | claims | description/examples | Search indexing |
+|-------------|:-----------------------:|:------:|:--------------------:|:---------------:|
 | EP granted (EPB) | ✅ | ✅ | ✅ | ✅ |
-| EP application (A1/A2) | ✅ | ❌ | partial | ✅ representative |
-| US application (A1) | ✅ | ❌¹ | ❌¹ | ✅ representative |
-| US granted (B1/B2) | ✅ | ❌¹ | ❌¹ | ⚠️ not in search, found via family API |
-| WO / AU / CN / MX | partial | ❌¹/✅² | ❌¹/✅² | partial |
+| EP application (A1/A2) | ✅ | ✅³ | ✅³ | ✅ representative |
+| WO | ✅ | ✅³ | ✅³ | partial |
+| US application (A1) | ❌⁴ | ❌¹ | ❌¹ | ✅ representative |
+| US granted (B1/B2) | ❌⁴ | ❌¹ | ❌¹ | ⚠️ not in search, found via family API |
+| CN-A (application) | ✅ | ❌¹ | ❌¹ | partial |
+| CN-B (granted) | ❌⁴ | ❌¹ | ❌¹ | partial |
+| AU / MX / other | partial | ❌¹/✅² | ❌¹/✅² | partial |
 
 ¹ EPO OPS subscription does not include fulltext (claims/description) for
 non-EP jurisdictions. Returns HTTP 404. This is a data licensing limit,
@@ -164,6 +167,17 @@ patents × Epodoc/Docdb/Original model classes.
 ² Google Patents JSONL supplement (Task I, 2026-06) provides claims/
 examples for rows in the Kaggle scrape batch. Coverage is per-batch,
 not automatic.
+
+³ EP-A1 and WO returned fulltext via direct Epodoc lookup in probe
+(2026-06-15). This may vary by individual patent.
+
+⁴ Direct Epodoc lookup returns HTTP 404 even on biblio endpoint.
+Probe 2026-06-15: US 8/8 patents returned 404 on biblio; CN-B also 404.
+**Production path is unaffected:** search results carry biblio metadata
+inline, so patents discovered via search or family API still have
+title/abstract in DB. This only affects `inspect_patent` sandbox
+fallback (ad-hoc lookup of patents not in DB). Sandbox fallback now
+detects this and shows Espacenet/Google Patents URLs.
 
 **Key insight from Pemirolast × IPF validation:**
 EPO search returns the **representative publication** of a patent family (usually A1).
@@ -286,7 +300,10 @@ defect.
 Practical implications:
 - US/CN/WO patents in our DB have empty `claims` and `examples_extracted`
 - Snippet extraction for these patents relies entirely on abstract
-  (abstract endpoint IS available for all jurisdictions)
+- Biblio (title/abstract) is available for EP, WO, and CN-A via direct
+  Epodoc lookup, but **not** for US or CN-B (404 on biblio endpoint).
+  Production path is unaffected because search results carry biblio
+  inline; this only affects `inspect_patent` sandbox fallback.
 - Family expansion of EP-A1 to EP-B1 is the primary path to obtain
   granted-patent fulltext for analysis
 - The `_fetch_claims` function logs a warning on 404 but returns empty

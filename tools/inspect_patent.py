@@ -58,10 +58,18 @@ def get_patent(patent_id):
     return dict(row) if row else None
 
 
+def _patent_urls(patent_id):
+    """Generate Espacenet and Google Patents URLs for manual lookup."""
+    espacenet = f"https://worldwide.espacenet.com/patent/search?q=pn%3D{patent_id}"
+    google    = f"https://patents.google.com/patent/{patent_id}/en"
+    return espacenet, google
+
+
 def get_patent_with_fallback(patent_id):
     """
     DB miss 時打 EPO 抓 raw，但不寫 DB。
     Returns (patent_dict, source) where source is 'db' or 'epo_sandbox'.
+    Returns (None, 'epo_sandbox') when EPO returns no content at all.
     """
     p = get_patent(patent_id)
     if p:
@@ -72,12 +80,29 @@ def get_patent_with_fallback(patent_id):
         _fetch_title, _fetch_abstract, _fetch_claims,
         _fetch_description, _parse_examples,
     )
+    title    = _fetch_title(patent_id)
+    abstract = _fetch_abstract(patent_id)
+    claims   = _fetch_claims(patent_id)
+    examples = _parse_examples(_fetch_description(patent_id))
+
+    # All content empty → EPO API has nothing for this patent
+    if not any([title, abstract, claims, examples]):
+        espacenet_url, google_url = _patent_urls(patent_id)
+        print(f"[!] EPO API returned no content for {patent_id}")
+        print(f"    The EPO OPS API has narrower coverage than the")
+        print(f"    Espacenet website — a patent visible on the web")
+        print(f"    may not be available through the API.")
+        print(f"    Try manually:")
+        print(f"      Espacenet: {espacenet_url}")
+        print(f"      Google:    {google_url}")
+        return None, "epo_sandbox"
+
     return {
         "patent_id": patent_id,
-        "title": _fetch_title(patent_id),
-        "abstract": _fetch_abstract(patent_id),
-        "claims": _fetch_claims(patent_id),
-        "examples_extracted": _parse_examples(_fetch_description(patent_id)),
+        "title": title,
+        "abstract": abstract,
+        "claims": claims,
+        "examples_extracted": examples,
         "year": "",
         "source": "epo_sandbox",
         "formulation_snippets": None,
@@ -105,7 +130,8 @@ def main():
 
     p, source = get_patent_with_fallback(args.patent_id)
     if not p:
-        print(f"ERROR: {args.patent_id} not in DB", file=sys.stderr)
+        print(f"ERROR: {args.patent_id} — no content available from EPO or DB.",
+              file=sys.stderr)
         sys.exit(1)
 
     # Header
@@ -117,6 +143,16 @@ def main():
     print(f"  examples_extracted: {len(p['examples_extracted'] or ''):>6} chars")
     print(f"  abstract:           {len(p['abstract'] or ''):>6} chars")
     print(f"  stored snippets:    {len(p['formulation_snippets'] or '') > 2 and 'yes' or 'empty/NULL'}")
+
+    # Jurisdiction hint: sandbox title/abstract only (no fulltext)
+    if source == "epo_sandbox" and not (p["claims"] or p["examples_extracted"]):
+        espacenet_url, google_url = _patent_urls(p["patent_id"])
+        print(f"\n  ⚠  EPO API returned title/abstract only (no fulltext).")
+        print(f"     The OPS API does not license non-EP claims/description.")
+        print(f"     (Espacenet website may still show them — different backend.)")
+        print(f"     For full text, try:")
+        print(f"       Espacenet: {espacenet_url}")
+        print(f"       Google:    {google_url}")
 
     # Pick text source
     sources = {
