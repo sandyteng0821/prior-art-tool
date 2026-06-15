@@ -8,7 +8,8 @@ If the patent isn't in the DB, fetches raw content from EPO without
 persisting (sandbox mode) — useful for ad-hoc exploration without
 polluting the production DB.
 
-Read-only with respect to cache/patents.db. Calls EPO API only on DB miss.
+Read-only with respect to cache/patents.db. Calls EPO API only on DB miss
+(or when --force-refetch is used).
 
 Usage:
     # patent already in DB
@@ -16,6 +17,9 @@ Usage:
 
     # patent not in DB → sandbox fetch (not persisted)
     python -m tools.inspect_patent EP1234567B1 --aliases acetaminophen
+
+    # force re-fetch from EPO, bypassing DB and diskcache (read-only)
+    python -m tools.inspect_patent EP2443120A2 --force-refetch --raw
 
     # raw dump
     python -m tools.inspect_patent EA004311B1 --raw --source abstract
@@ -30,6 +34,7 @@ Designed for:
     - debugging Task A snippet quality on individual patents
     - testing new keyword/alias variants before changing config
     - cross-project serendipity (find unexpected drug overlaps)
+    - verifying whether EPO has content for a specific patent (--force-refetch)
 """
 import argparse
 import sqlite3
@@ -65,17 +70,40 @@ def _patent_urls(patent_id):
     return espacenet, google
 
 
-def get_patent_with_fallback(patent_id):
+def _clear_epo_cache(patent_id):
+    """Remove stale diskcache entries for a patent so _fetch_* hits EPO fresh."""
+    import diskcache
+    cache = diskcache.Cache("cache/epo")
+    cleared = []
+    for prefix in ("title", "abstract", "claims"):
+        key = f"{prefix}::{patent_id}"
+        if key in cache:
+            cache.delete(key)
+            cleared.append(prefix)
+    if cleared:
+        print(f"[!] Cleared diskcache: {', '.join(cleared)}")
+    else:
+        print(f"[!] No diskcache entries found for {patent_id}")
+
+
+def get_patent_with_fallback(patent_id, force=False):
     """
     DB miss 時打 EPO 抓 raw，但不寫 DB。
     Returns (patent_dict, source) where source is 'db' or 'epo_sandbox'.
     Returns (None, 'epo_sandbox') when EPO returns no content at all.
+
+    force=True: skip DB lookup, clear diskcache, fetch fresh from EPO.
     """
-    p = get_patent(patent_id)
-    if p:
-        return p, "db"
+    if not force:
+        p = get_patent(patent_id)
+        if p:
+            return p, "db"
+
+    if force:
+        print(f"[!] --force-refetch: skipping DB, clearing diskcache for {patent_id}")
+        _clear_epo_cache(patent_id)
     
-    print(f"[!] {patent_id} not in DB — fetching from EPO (not persisted)")
+    print(f"[!] {patent_id} {'not in DB — ' if not force else ''}fetching from EPO (not persisted)")
     from modules.patent_fetcher import (
         _fetch_title, _fetch_abstract, _fetch_claims,
         _fetch_description, _parse_examples,
@@ -126,9 +154,11 @@ def main():
     ap.add_argument("--source", choices=["claims", "examples", "abstract", "all"],
                     default="all",
                     help="Which DB field to extract from (default: all)")
+    ap.add_argument("--force-refetch", action="store_true",
+                    help="Skip DB and diskcache, fetch fresh from EPO (read-only, no DB write)")
     args = ap.parse_args()
 
-    p, source = get_patent_with_fallback(args.patent_id)
+    p, source = get_patent_with_fallback(args.patent_id, force=args.force_refetch)
     if not p:
         print(f"ERROR: {args.patent_id} — no content available from EPO or DB.",
               file=sys.stderr)
