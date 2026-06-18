@@ -106,7 +106,7 @@ graph TD
 | LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring; Supports reasoning models (GPT-5, o3) via _make_llm() — auto-detects temperature support and token budget. |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 | Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
-| Importer | scripts/import_google_patents_jsonl.py | One-off import of Google Patents fulltext from a JSONL artifact (scraped off-machine on Kaggle). Targets non-EP/WO rows in the artifact whose claims are currently empty. Only those rows are touched; EP/WO and EPO-populated rows are not overwritten. See Task I. |
+| Importer | `scripts/import_google_patents_jsonl.py` | One-off import of Google Patents fulltext from a JSONL artifact (scraped off-machine on Kaggle). Targets non-EP/WO rows in the artifact whose claims are currently empty. Only those rows are touched; EP/WO and EPO-populated rows are not overwritten. See Task I. |
 
 ---
 
@@ -400,6 +400,7 @@ Tracked as Gap Analysis item.
 | 2026-05 | Ampicillin × formulation evidence | `configs/ampicillin_formulation_evidence.py` | 188 | Task E verified | Excipient pipeline eval V0; top 10 recommendations match manual test table; P@5=0.40 P@10=0.20 (abstract-only ground truth, biased low by design) |
 | 2026-05 | Ampicillin × formulation evidence (V1) | `configs/ampicillin_formulation_evidence.py` | 187 | Task F verified | Excipient pipeline eval V1 (CSV-driven); P@5=0.40 P@10=0.20 numerically equal to V0 but hits different keywords (V0: polymethacrylate+MCC, V1: MCC+PEG). Coincidence, not equivalence. Three compounding causes documented in task_F.md post-impl note. Pipeline mechanics validated. |
 | 2026-06 | Pemirolast × IPF (Google Patents supplement) | `configs/pemirolast_ipf.py` | 369 | Task I verified | 408 of ~3954 non-EP/WO rows in DB received supplemental fulltext (the rest were not in the scrape scope or had no Google content); Pemirolast project claims coverage delta: CN 0→108, US 0→20, JP 0→16, KR 0→8. 168/168 rows re-extracted by backfill_snippets (26 yielded non-empty formulation snippets). |
+| 2026-06 | US9415051B1 risk underscoring investigation | `configs/pemirolast_ipf_v3.py` | 1 (single-patent deep dive) | 58/58 test checks PASS | Root cause: three-layer problem (diskcache bypass, screening abstract-only, rubric dependent-claim downweight). debug_scoring tool confirms: default rubric → Low, rubric_v2 → High. `configs/rubrics/rubric_v2.txt` committed as amended rubric candidate (pending expert review). |
 
 ---
 
@@ -410,6 +411,7 @@ Tracked as Gap Analysis item.
 | `tests/test_epo_search_vs_fetch.py` | Reproduces B2 missing from search results |
 | `tests/test_family_api.py` | Validates EPO family API call signature and response parsing |
 | `tests/test_formulation_snippets.py` | Regression tests for `_extract_formulation_snippets` — drug × keyword filter, alias matching, cap, JSON-serializability |
+| `tests/test_debug_tools.py` | Validation suite for `check_db` + `debug_scoring`. 43 dry-run checks (zero cost) + 15 live LLM checks (`--live` flag). Covers CLI flags, DB lookup, error handling, and spec validation cases (US9415051B1 × pemirolast_ipf_v3). Run with `python -m tests.test_debug_tools [--live]`. |
 | `tools/eval_v0.py` | Excipient pipeline evaluation V0 — reads patent DB, extracts keyword-based ground truth, calls recommend API, computes P@k. Run with `python -m tools.eval_v0`. |
 | `tools/eval_v1.py` | Excipient pipeline evaluation V1 (CSV-driven) — same pipeline as V0 but reads patent list from `--csv`, derives keyword list dynamically from recommend API top 10, adds typo guard. Run with `python -m tools.eval_v1 --csv ... --drug ... --target-excipient ...`. |
 
@@ -422,6 +424,10 @@ Tracked as Gap Analysis item.
 - Re-running `main.py` is safe — patents already in `patents.db` take the `[DB hit]` path.
 - Claims text truncated at `CLAIMS_MAX_CHARS` (default 3000) — adjust in `config.py`.
 - `configs/` directory contains per-project config snapshots. `config.py` is always the active config.
+- `configs/rubrics/` directory contains rubric override files for A/B testing
+  ANALYSIS_SYSTEM prompts. Files use `{TARGET_DRUG}`, `{TARGET_ROUTE}`,
+  `{TARGET_INDICATION}` placeholders, interpolated at runtime from the
+  specified `--config`.
 - `outputs/ground_truth/*.json` are evaluation artifacts — keep the first committed baseline, but do not re-commit every re-run (only metadata like timestamp / git_commit changes).
 - For non-EP fulltext (US/CN/KR/JP/EA), Google Patents supplement is
   available via `scripts/import_google_patents_jsonl.py`. The scraper
@@ -509,3 +515,45 @@ Run: `python -m tools.probe_coverage_v2 --csv output/gap_analysis_*.csv`
 See `tools/probe_coverage_v2.md` for user guide, SQL idiom explanations
 (pandas-translated), data flow diagram, and maintainer tripwires.
 First reference report: `output/coverage_report_pemirolast_20260605.md`.
+
+### `tools/check_db.py`
+ 
+Batch DB status checker for patent IDs.
+ 
+- Accepts patent IDs via CLI args (space or semicolon-separated) or `--file`
+- Semicolon-separated EPO family lists supported: paste directly from Espacenet
+- Reports per-patent: abstract/claims/examples char count, snippets, source
+- `--detail` for full metadata (fetched_at, family_fetched, family_of)
+- `--family` to look up DB family members via `family_of` field
+- Read-only, zero cost, run as many times as needed
+Run: `python -m tools.check_db US9415051B1 EP4138798B1`
+or:  `python -m tools.check_db 'EP4138798A1;EP4138798B1;US2023157975A1'`
+ 
+Useful for:
+- Validating expert-provided patent lists against pipeline DB coverage
+- Batch family member status check (which members are in DB, which are missing)
+- Quick data completeness audit before running debug_scoring
+
+### `tools/debug_scoring.py`
+ 
+Single-patent LLM scoring reproducer for diagnosing "why did the pipeline
+score this patent Low/Medium/High?"
+ 
+- `--config` required: loads config via importlib.util (no global pollution)
+- `--dry-run`: prints LLM input (system prompt, claims text, keyword probe) without API calls
+- `--stage {1,2,both}`: run screening only, analysis only, or both
+- `--rubric-override <file>`: replace ANALYSIS_SYSTEM prompt; file supports
+  `{TARGET_DRUG}` etc. placeholders interpolated from config
+- `--compare <file>`: A/B test — runs Stage 2 twice (default vs override),
+  prints side-by-side with `≠` markers on differing fields
+- `--screening-model` / `--analysis-model`: override config's model choice
+Architecture decision: Approach D (self-defined Pydantic schemas + prompts,
+no import of `llm_analyzer.py` which crashes on module-level init). AST-based
+drift detection planned but not yet implemented (Step 6).
+ 
+Run: `python -m tools.debug_scoring US9415051B1 --config configs/pemirolast_ipf_v3.py`
+ 
+Complementary to `inspect_patent` (data layer) — debug_scoring is the
+judgment layer. See `docs/spec/spec_debug_scoring.md` for full design spec.
+ 
+Origin: US9415051B1 risk underscoring investigation (2026-06-17).
