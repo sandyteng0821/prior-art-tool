@@ -32,3 +32,7 @@ python-dotenv==1.1.0
 # aiohttp==3.11.18                # uncomment for async patent fetching
 
 pdfplumber
+
+# ── API layer (J-0) ──────────────────────────────────────────────────────────
+fastapi>=0.110,<1.0
+uvicorn>=0.27,<1.0
