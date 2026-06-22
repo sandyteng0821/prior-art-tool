@@ -88,9 +88,13 @@ async def health_check():
     }
 
 
-# ── Router registration stub ────────────────────────────────────────────────
-# Routers will be added here in J-1 through J-4:
-#   from api.routers import database, inspect, analysis
-#   app.include_router(database.router, prefix="/api/v1/db")
+# ── Router registration ─────────────────────────────────────────────────────
+# J-1: database endpoints
+from api.routers import database  # noqa: E402
+
+app.include_router(database.router, prefix="/api/v1/db")
+
+# Future routers (J-2..J-4):
+#   from api.routers import inspect, analysis
 #   app.include_router(inspect.router, prefix="/api/v1/patents")
 #   app.include_router(analysis.router, prefix="/api/v1/analysis")
