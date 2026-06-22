@@ -1,0 +1,261 @@
+"""
+tests/test_api_smoke.py — Smoke test for API endpoints (J-0 through J-2a).
+
+Zero-cost: no LLM calls, no EPO calls. Only hits the local DB.
+Run against a live server (docker compose up) or skip if not reachable.
+
+Usage:
+    python tests/test_api_smoke.py                    # default: localhost:8007
+    python tests/test_api_smoke.py --base-url http://localhost:9000
+    API_BASE_URL=http://localhost:8007 python tests/test_api_smoke.py
+
+Exit code 0 = all pass, 1 = at least one failure.
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+# ── Test fixtures ────────────────────────────────────────────────────────────
+# Change these if your DB content changes.
+# KNOWN_PATENT must exist in the DB with non-empty claims and examples.
+# KNOWN_ALIASES must produce at least one alias_count hit on KNOWN_PATENT.
+# MISSING_PATENT must NOT exist in the DB.
+KNOWN_PATENT = "US9415051B1"
+KNOWN_ALIASES = ["Pemirolast", "BMY-26517"]
+KNOWN_KEYWORDS = ["compris", "formulation", "excipient"]
+MISSING_PATENT = "AU2020203515A1"
+
+
+def _url(base: str, path: str) -> str:
+    return base.rstrip("/") + path
+
+
+def _get(url: str) -> tuple[int, dict]:
+    try:
+        resp = urllib.request.urlopen(url)
+        return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _post(url: str, body: dict) -> tuple[int, dict]:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req)
+        return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+class SmokeTest:
+    def __init__(self, base_url: str):
+        self.base = base_url
+        self.passed = 0
+        self.failed = 0
+
+    def check(self, name: str, condition: bool, detail: str = ""):
+        if condition:
+            print(f"  ✓ {name}")
+            self.passed += 1
+        else:
+            msg = f"  ✗ {name}"
+            if detail:
+                msg += f"  — {detail}"
+            print(msg)
+            self.failed += 1
+
+    def run(self):
+        # ── J-0: Health check ────────────────────────────────────────────
+        print("\n[J-0] Health check")
+        try:
+            status, data = _get(_url(self.base, "/"))
+        except Exception as e:
+            print(f"  ✗ Cannot reach {self.base}: {e}")
+            print(f"\n  Is the server running? (docker compose up)")
+            self.failed += 1
+            return
+
+        self.check("GET / → 200", status == 200, f"got {status}")
+        self.check("status = running", data.get("status") == "running")
+        self.check(
+            "patents_count is int",
+            isinstance(data.get("patents_count"), int),
+            f"got {type(data.get('patents_count')).__name__}",
+        )
+
+        # ── J-1: Database endpoints ──────────────────────────────────────
+        print("\n[J-1] DB patent lookup")
+        status, data = _get(
+            _url(self.base, f"/api/v1/db/patents/{KNOWN_PATENT}")
+        )
+        self.check("known patent → 200", status == 200, f"got {status}")
+        self.check("found = true", data.get("found") is True)
+        self.check(
+            "has claims_chars > 0",
+            data.get("claims_chars", 0) > 0,
+            f"got {data.get('claims_chars')}",
+        )
+
+        status, data = _get(
+            _url(self.base, f"/api/v1/db/patents/{KNOWN_PATENT}?detail=true&family=true")
+        )
+        self.check("detail+family → 200", status == 200)
+        self.check("detail present", data.get("detail") is not None)
+        self.check(
+            "family_members is list",
+            isinstance(data.get("family_members"), list),
+        )
+
+        status, data = _get(
+            _url(self.base, "/api/v1/db/patents/NONEXISTENT_XYZ123")
+        )
+        self.check("unknown patent → 404", status == 404, f"got {status}")
+        self.check("found = false", data.get("found") is False)
+
+        print("\n[J-1] DB stats")
+        status, data = _get(_url(self.base, "/api/v1/db/stats"))
+        self.check("stats → 200", status == 200)
+        self.check(
+            "total_patents > 0",
+            data.get("total_patents", 0) > 0,
+            f"got {data.get('total_patents')}",
+        )
+        self.check("by_source is dict", isinstance(data.get("by_source"), dict))
+
+        # ── J-2a: Inspect endpoint ───────────────────────────────────────
+        print("\n[J-2a] Inspect — DB hit")
+        status, data = _post(
+            _url(self.base, "/api/v1/patents/inspect"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "drug_aliases": KNOWN_ALIASES,
+                "keywords": KNOWN_KEYWORDS,
+            },
+        )
+        self.check("inspect DB hit → 200", status == 200, f"got {status}")
+        self.check(
+            "data_source = db",
+            data.get("data_source") == "db",
+            f"got {data.get('data_source')}",
+        )
+        self.check("title present", bool(data.get("title")))
+        self.check(
+            "total_snippet_count > 0",
+            data.get("total_snippet_count", 0) > 0,
+            f"got {data.get('total_snippet_count')}",
+        )
+        self.check(
+            f"alias_counts has {KNOWN_ALIASES[0]}",
+            KNOWN_ALIASES[0] in data.get("alias_counts", {}),
+        )
+        self.check(
+            "snippets has claims key",
+            "claims" in data.get("snippets", {}),
+        )
+
+        print("\n[J-2a] Inspect — DB miss")
+        status, data = _post(
+            _url(self.base, "/api/v1/patents/inspect"),
+            {
+                "patent_id": MISSING_PATENT,
+                "drug_aliases": ["test"],
+            },
+        )
+        self.check("inspect DB miss → 200", status == 200, f"got {status}")
+        self.check(
+            "data_source = db_miss",
+            data.get("data_source") == "db_miss",
+            f"got {data.get('data_source')}",
+        )
+        self.check(
+            "fallback_urls present",
+            data.get("fallback_urls") is not None,
+        )
+        self.check(
+            "total_snippet_count = 0",
+            data.get("total_snippet_count") == 0,
+        )
+
+        print("\n[J-2a] Inspect — custom keywords")
+        status, data = _post(
+            _url(self.base, "/api/v1/patents/inspect"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "drug_aliases": [KNOWN_ALIASES[0]],
+                "keywords": ["tablet", "oral"],
+            },
+        )
+        self.check("custom kw → 200", status == 200)
+        self.check(
+            "data_source = db",
+            data.get("data_source") == "db",
+        )
+
+        print("\n[J-2a] Inspect — source_filter")
+        status, data = _post(
+            _url(self.base, "/api/v1/patents/inspect"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "drug_aliases": [KNOWN_ALIASES[0]],
+                "source_filter": "claims",
+            },
+        )
+        self.check("source_filter=claims → 200", status == 200)
+        snippet_keys = list(data.get("snippets", {}).keys())
+        self.check(
+            "only claims in snippets",
+            snippet_keys == ["claims"],
+            f"got {snippet_keys}",
+        )
+        alias_keys = list(
+            data.get("alias_counts", {}).get(KNOWN_ALIASES[0], {}).keys()
+        )
+        self.check(
+            "alias_counts still has all sources",
+            set(alias_keys) == {"claims", "examples", "abstract"},
+            f"got {alias_keys}",
+        )
+
+        print("\n[J-2a] Inspect — validation")
+        status, _ = _post(
+            _url(self.base, "/api/v1/patents/inspect"),
+            {"patent_id": "X"},  # missing drug_aliases
+        )
+        self.check("missing field → 422", status == 422, f"got {status}")
+
+        # ── Summary ──────────────────────────────────────────────────────
+        total = self.passed + self.failed
+        print(f"\n{'='*50}")
+        print(f"  {self.passed}/{total} passed", end="")
+        if self.failed:
+            print(f"  ({self.failed} FAILED)")
+        else:
+            print("  — all green ✓")
+        print(f"{'='*50}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="API smoke test (J-0 through J-2a)")
+    ap.add_argument(
+        "--base-url",
+        default=os.environ.get("API_BASE_URL", "http://localhost:8007"),
+        help="API base URL (default: $API_BASE_URL or http://localhost:8007)",
+    )
+    args = ap.parse_args()
+
+    t = SmokeTest(args.base_url)
+    t.run()
+    sys.exit(1 if t.failed else 0)
+
+
+if __name__ == "__main__":
+    main()

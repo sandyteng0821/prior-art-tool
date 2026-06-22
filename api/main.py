@@ -94,7 +94,11 @@ from api.routers import database  # noqa: E402
 
 app.include_router(database.router, prefix="/api/v1/db")
 
-# Future routers (J-2..J-4):
-#   from api.routers import inspect, analysis
-#   app.include_router(inspect.router, prefix="/api/v1/patents")
+# J-2: inspect endpoint
+from api.routers import inspect  # noqa: E402
+ 
+app.include_router(inspect.router, prefix="/api/v1/patents")
+ 
+# Future routers (J-3..J-4):
+#   from api.routers import analysis
 #   app.include_router(analysis.router, prefix="/api/v1/analysis")
