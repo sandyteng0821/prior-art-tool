@@ -26,7 +26,7 @@ KNOWN_PATENT = "US9415051B1"
 KNOWN_ALIASES = ["Pemirolast", "BMY-26517"]
 KNOWN_KEYWORDS = ["compris", "formulation", "excipient"]
 MISSING_PATENT = "AU2020203515A1"
-
+KNOWN_CONFIG = "pemirolast_ipf_v3"
 
 def _url(base: str, path: str) -> str:
     return f"{base.rstrip('/')}{path}"
@@ -235,6 +235,88 @@ class SmokeTest:
         )
         self.check("missing field → 422", status == 422, f"got {status}")
 
+        # ── J-3: Score — dry-run ─────────────────────────────────────
+        print("\n[J-3] Score — dry-run")
+        status, data = _post(
+            _url(self.base, "/api/v1/analysis/score"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "config_name": KNOWN_CONFIG,
+                "dry_run": True,
+            },
+        )
+        self.check("score dry-run → 200", status == 200, f"got {status}")
+        self.check("dry_run = true", data.get("dry_run") is True)
+        self.check(
+            "db_state.title present",
+            bool(data.get("db_state", {}).get("title")),
+        )
+        self.check(
+            "screening_input present",
+            data.get("screening_input") is not None,
+        )
+        self.check(
+            "analysis_input present",
+            data.get("analysis_input") is not None,
+        )
+        self.check(
+            "screening is null (dry-run)",
+            data.get("screening") is None,
+        )
+
+        # ── J-3: Score — dry-run stage 1 only ────────────────────────
+        print("\n[J-3] Score — dry-run stage 1 only")
+        status, data = _post(
+            _url(self.base, "/api/v1/analysis/score"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "config_name": KNOWN_CONFIG,
+                "dry_run": True,
+                "stage": "1",
+            },
+        )
+        self.check("stage 1 dry-run → 200", status == 200, f"got {status}")
+        self.check(
+            "screening_input present",
+            data.get("screening_input") is not None,
+        )
+        self.check(
+            "analysis_input absent",
+            data.get("analysis_input") is None,
+        )
+
+        # ── J-3: Score — bad config ──────────────────────────────────
+        print("\n[J-3] Score — bad config")
+        status, data = _post(
+            _url(self.base, "/api/v1/analysis/score"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "config_name": "nonexistent_config_xyz",
+                "dry_run": True,
+            },
+        )
+        self.check("bad config → 400", status == 400, f"got {status}")
+        self.check(
+            "detail mentions 'not found'",
+            "not found" in data.get("detail", "").lower(),
+        )
+
+        # ── J-3: Score — patent not in DB ────────────────────────────
+        print("\n[J-3] Score — patent not in DB")
+        status, data = _post(
+            _url(self.base, "/api/v1/analysis/score"),
+            {
+                "patent_id": "XX000000",
+                "config_name": KNOWN_CONFIG,
+                "dry_run": True,
+            },
+        )
+        self.check("patent miss → 404", status == 404, f"got {status}")
+        self.check(
+            "detail mentions 'not in DB'",
+            "not in DB" in data.get("detail", ""),
+        )
+
         # ── Summary ──────────────────────────────────────────────────
         total = self.passed + self.failed
         print(f"\n{'='*50}")
@@ -247,7 +329,7 @@ class SmokeTest:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="API smoke test (J-0 through J-2b)")
+    ap = argparse.ArgumentParser(description="API smoke test (J-0 through J-3)")
     ap.add_argument(
         "--base-url",
         default=os.environ.get("API_BASE_URL", "http://localhost:8007"),
