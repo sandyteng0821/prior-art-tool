@@ -317,6 +317,41 @@ class SmokeTest:
             "not in DB" in data.get("detail", ""),
         )
 
+        # ── J-4: Compare — bad config ────────────────────────────────
+        print("\n[J-4] Compare — bad config")
+        status, data = _post(
+            _url(self.base, "/api/v1/analysis/compare"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "config_name": "nonexistent_config_xyz",
+                "override_rubric_text": "test",
+            },
+        )
+        self.check("compare bad config → 400", status == 400, f"got {status}")
+
+        # ── J-4: Compare — patent not in DB ──────────────────────────
+        print("\n[J-4] Compare — patent not in DB")
+        status, data = _post(
+            _url(self.base, "/api/v1/analysis/compare"),
+            {
+                "patent_id": "XX000000",
+                "config_name": KNOWN_CONFIG,
+                "override_rubric_text": "test",
+            },
+        )
+        self.check("compare patent miss → 404", status == 404, f"got {status}")
+
+        # ── J-4: Compare — missing required field ────────────────────
+        print("\n[J-4] Compare — validation")
+        status, data = _post(
+            _url(self.base, "/api/v1/analysis/compare"),
+            {
+                "patent_id": KNOWN_PATENT,
+                "config_name": KNOWN_CONFIG,
+            },
+        )
+        self.check("compare missing field → 422", status == 422, f"got {status}")
+
         # ── Summary ──────────────────────────────────────────────────
         total = self.passed + self.failed
         print(f"\n{'='*50}")
@@ -329,7 +364,7 @@ class SmokeTest:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="API smoke test (J-0 through J-3)")
+    ap = argparse.ArgumentParser(description="API smoke test (J-0 through J-4)")
     ap.add_argument(
         "--base-url",
         default=os.environ.get("API_BASE_URL", "http://localhost:8007"),
