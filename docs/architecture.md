@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2026-06-22 (API layer J-0 through J-2 shipped; inspect endpoint with EPO sandbox fallback)
+> Last updated: 2026-06-25 (API layer J-0 through J-5 complete; scoring, compare, deployment guide shipped)
 
 ---
 
@@ -107,7 +107,7 @@ graph TD
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 | Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
 | Importer | `scripts/import_google_patents_jsonl.py` | One-off import of Google Patents fulltext from a JSONL artifact (scraped off-machine on Kaggle). Targets non-EP/WO rows in the artifact whose claims are currently empty. Only those rows are touched; EP/WO and EPO-populated rows are not overwritten. See Task I. |
-| API Layer | `api/` | REST API (FastAPI + Docker). J-0: health check + scaffolding. J-1: DB lookup + stats endpoints. J-2: inspect endpoint (DB hit + EPO sandbox fallback). EPO fetch logic ported inline — does not import `modules/` (same D1 rationale as debug_scoring). See `design_api_layer.md`. |
+| API Layer | `api/` | REST API (FastAPI + Docker). J-0: health check. J-1: DB lookup + stats. J-2: inspect (DB hit + EPO sandbox fallback). J-3: single-patent LLM scoring (dry-run + live). J-4: A/B rubric comparison. All logic ported inline — does not import `modules/` (D1). See `design_api_layer.md`. |
 
 ---
 
@@ -239,7 +239,7 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 | 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) now cover most cases. Orphan patents (no EP/US family member found by query, and not in Google scrape) still missed — needs mechanism-based or full-text query strategy (Bug Y). |
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ❌ Open | bio team schema mismatch |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
-| 10 | REST API endpoint | `api/` layer | **P2** | ⚠️ Partial | J-0 scaffolding + J-1 DB endpoints + J-2 inspect (with EPO sandbox fallback) shipped 2026-06-22. Remaining: J-3 scoring, J-4 compare, J-5 test infra. |
+| 10 | REST API endpoint | `api/` layer | **P2** | ✅ Done | J-0 through J-5 shipped 2026-06-25. 6 endpoints (health, DB lookup, stats, inspect, score, compare). 46-check smoke test. Deployment guide at `docs/api_deployment.md`. |
 | 11 | Reasoning model token budget may need tuning | `llm_analyzer.py` | **P3** | ⚠️ Partial | GPT-5 screening=4000, analysis=8000; some patents still fail if reasoning chain is long |
 
 ### Roadmap
@@ -267,10 +267,10 @@ P3  System integration
     │   ✅ J-0 scaffolding (health check, Docker, deps)
     │   ✅ J-1 DB endpoints (patent lookup, stats)
     │   ✅ J-2 inspect endpoint (DB hit + EPO sandbox fallback)
-    │   → J-3 scoring endpoint (LLM analysis)
-    │   → J-4 compare endpoint (A/B rubric test)
-    │   └── J-5 test infra (pytest + TestClient)
-    └── smoke test: tests/test_api_smoke.py (30 checks, J-0 through J-2)
+    │   ✅ J-3 scoring endpoint (dry-run + live LLM)
+    │   ✅ J-4 compare endpoint (A/B rubric test)
+    │   └── ✅ J-5 deployment guide + smoke test
+    └── smoke test: tests/test_api_smoke.py (46 checks, J-0 through J-4)
 ```
 
 ---
@@ -422,7 +422,7 @@ Tracked as Gap Analysis item.
 | `tests/test_debug_tools.py` | Validation suite for `check_db` + `debug_scoring`. 43 dry-run checks (zero cost) + 15 live LLM checks (`--live` flag). Covers CLI flags, DB lookup, error handling, and spec validation cases (US9415051B1 × pemirolast_ipf_v3). Run with `python -m tests.test_debug_tools [--live]`. |
 | `tools/eval_v0.py` | Excipient pipeline evaluation V0 — reads patent DB, extracts keyword-based ground truth, calls recommend API, computes P@k. Run with `python -m tools.eval_v0`. |
 | `tools/eval_v1.py` | Excipient pipeline evaluation V1 (CSV-driven) — same pipeline as V0 but reads patent list from `--csv`, derives keyword list dynamically from recommend API top 10, adds typo guard. Run with `python -m tools.eval_v1 --csv ... --drug ... --target-excipient ...`. |
-| `tests/test_api_smoke.py` | HTTP smoke test for API layer (J-0 through J-2). 30 checks covering health, DB lookup/stats, inspect DB hit/miss/EPO fallback, custom keywords, source_filter, validation. Zero-dependency (urllib only), runs against live server. `python tests/test_api_smoke.py [--base-url URL]`. |
+| `tests/test_api_smoke.py` | HTTP smoke test for API layer (J-0 through J-4). 46 checks covering health, DB lookup/stats, inspect DB hit/miss/EPO fallback, custom keywords, source_filter, validation, score dry-run/stage/errors, compare errors. Zero-dependency (urllib only), runs against live server. `python tests/test_api_smoke.py [--base-url URL]`. |
 
 ---
 
