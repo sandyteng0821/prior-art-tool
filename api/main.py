@@ -4,14 +4,12 @@ api/main.py — FastAPI application entry point.
 Responsibilities:
   - FastAPI instance with lifespan context
   - Health check endpoint (GET /)
-  - Router registration stub (routers added in J-1..J-4)
+  - Router registration
 
 Design decisions:
   - D4: DB path from DATABASE_PATH env var, default "cache/patents.db"
-  - Health check reads patent count via patent_store.stats() if DB exists
+  - Health check reads patent count directly (not via patent_store)
   - If DB file doesn't exist, patents_count returns null (not 0)
-  - patent_store.stats() calls init_db() internally which would CREATE
-    the DB — so we gate on os.path.exists() first.
 """
 
 import os
@@ -47,7 +45,6 @@ def _read_patent_count(db_path: str) -> int | None:
         conn.close()
         return count
     except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        # Table doesn't exist, or file isn't a valid SQLite DB
         return None
 
 
@@ -96,9 +93,14 @@ app.include_router(database.router, prefix="/api/v1/db")
 
 # J-2: inspect endpoint
 from api.routers import inspect  # noqa: E402
- 
+
 app.include_router(inspect.router, prefix="/api/v1/patents")
- 
-# Future routers (J-3..J-4):
-#   from api.routers import analysis
-#   app.include_router(analysis.router, prefix="/api/v1/analysis")
+
+# J-3: analysis endpoints (score, compare)
+from api.routers import analysis  # noqa: E402
+
+app.include_router(analysis.router, prefix="/api/v1/analysis")
+
+# Future routers (J-4..J-5):
+#   J-4: compare endpoint (added to analysis router)
+#   J-5: docker + test infra

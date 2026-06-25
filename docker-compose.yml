@@ -9,4 +9,5 @@ services:
       # Host-side cache/ must exist before `docker compose up`.
       # On fresh clone: mkdir -p cache  (dir is gitignored)
       - ./cache:/app/cache:ro
+      - ./configs:/app/configs:ro
     restart: unless-stopped
