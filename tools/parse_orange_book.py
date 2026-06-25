@@ -720,12 +720,14 @@ def _match_compound(lookup: dict, query: str) -> dict:
     }
 
 
-def _batch_lookup(lookup: dict, batch_file: str, json_mode: bool = False):
+def _batch_lookup(lookup: dict, batch_file: str, json_mode: bool = False,
+                  xlsx_path: str | None = None):
     """
     Batch lookup from a TSV/CSV file (e.g. CMAP compound table).
 
     Reads 'cmap_name' column, falls back to 'compound_aliases' if
     cmap_name is a BRD code (no OB match). Outputs a summary table.
+    Optionally exports to color-coded Excel for expert review.
     """
     batch_path = Path(batch_file)
     if not batch_path.exists():
@@ -836,6 +838,141 @@ def _batch_lookup(lookup: dict, batch_file: str, json_mode: bool = False):
     print(f"  Total: {len(results)}  |  In OB: {len(found)}  "
           f"|  Not found: {len(missed)}")
     print()
+
+    # ── Excel export ─────────────────────────────────────────────────
+    if xlsx_path:
+        _export_batch_xlsx(results, xlsx_path)
+
+
+def _export_batch_xlsx(results: list[dict], xlsx_path: str):
+    """Export batch lookup results to color-coded Excel."""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    except ImportError:
+        print("  [ERROR] openpyxl not installed. Run: pip install openpyxl")
+        return
+
+    wb = Workbook()
+
+    # ── Sheet 1: Matched (In Orange Book) ────────────────────────────
+    ws = wb.active
+    ws.title = "Patent Status"
+
+    headers = ["Compound", "OB Drug Name", "Active Ingredient",
+               "Patents", "Earliest Expiry", "Latest Expiry",
+               "Status", "Patent Numbers", "Applicant"]
+    ws.append(headers)
+
+    # Style definitions
+    header_font = Font(bold=True, size=11, name="Arial")
+    header_fill = PatternFill("solid", fgColor="4472C4")
+    header_font_white = Font(bold=True, size=11, name="Arial", color="FFFFFF")
+    thin_border = Border(
+        bottom=Side(style="thin", color="D9D9D9"),
+    )
+
+    status_fills = {
+        "⚪ EXPIRED":       PatternFill("solid", fgColor="F2F2F2"),
+        "🟡 EXPIRING SOON": PatternFill("solid", fgColor="FFF2CC"),
+        "🟢 ACTIVE":        PatternFill("solid", fgColor="E2EFDA"),
+    }
+    status_fonts = {
+        "⚪ EXPIRED":       Font(name="Arial", color="808080"),
+        "🟡 EXPIRING SOON": Font(name="Arial", color="BF8F00"),
+        "🟢 ACTIVE":        Font(name="Arial", color="375623"),
+    }
+
+    # Header formatting
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font_white
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    # Sort: Active first, then Expiring Soon, then Expired, by latest_expiry
+    status_order = {"🟢 ACTIVE": 0, "🟡 EXPIRING SOON": 1, "⚪ EXPIRED": 2,
+                    "UNKNOWN": 3}
+    found = [r for r in results if r["matched_drug"]]
+    found.sort(key=lambda r: (
+        status_order.get(r.get("status", ""), 4),
+        r.get("latest_expiry") or "9999",
+    ))
+
+    for r in found:
+        row_data = [
+            r["query"],
+            r.get("matched_drug", ""),
+            r.get("active_ingredient", ""),
+            r.get("n_patents", 0),
+            r.get("earliest_expiry") or "",
+            r.get("latest_expiry") or "",
+            r.get("status", "").replace("⚪ ", "").replace("🟡 ", "").replace("🟢 ", ""),
+            ", ".join(r.get("patent_numbers", [])),
+            "",  # applicant — not in summary, but column reserved
+        ]
+        ws.append(row_data)
+
+        # Color the row by status
+        row_idx = ws.max_row
+        status_raw = r.get("status", "")
+        fill = status_fills.get(status_raw)
+        font = status_fonts.get(status_raw, Font(name="Arial"))
+
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            if fill:
+                cell.fill = fill
+            cell.font = font
+            cell.border = thin_border
+
+    # Column widths
+    col_widths = [30, 20, 35, 8, 14, 14, 16, 30, 25]
+    for i, w in enumerate(col_widths, 1):
+        ws.column_dimensions[chr(64 + i) if i <= 26
+                              else chr(64 + (i - 1) // 26) + chr(65 + (i - 1) % 26)].width = w
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{chr(64 + len(headers))}1"
+
+    # ── Sheet 2: Not Found ───────────────────────────────────────────
+    ws2 = wb.create_sheet("Not in Orange Book")
+    ws2.append(["Compound"])
+    ws2.cell(row=1, column=1).font = header_font_white
+    ws2.cell(row=1, column=1).fill = PatternFill("solid", fgColor="808080")
+
+    missed = [r for r in results if not r["matched_drug"]]
+    for r in sorted(missed, key=lambda x: x["query"].lower()):
+        ws2.append([r["query"]])
+    ws2.column_dimensions["A"].width = 40
+
+    # ── Sheet 3: Summary ─────────────────────────────────────────────
+    ws3 = wb.create_sheet("Summary")
+    summary_data = [
+        ("Total Compounds", len(results)),
+        ("In Orange Book", len(found)),
+        ("Not Found", len(missed)),
+        ("Match Rate", f"{len(found)/len(results)*100:.1f}%" if results else "0%"),
+        ("", ""),
+        ("Active Patents", sum(1 for r in found if "ACTIVE" in r.get("status", ""))),
+        ("Expiring Soon (< 1yr)", sum(1 for r in found if "EXPIRING" in r.get("status", ""))),
+        ("Expired", sum(1 for r in found if "EXPIRED" in r.get("status", ""))),
+        ("", ""),
+        ("Data Source", "FDA Orange Book (fda.gov/media/76860/download)"),
+        ("Generated", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("Note", "Orange Book only contains NDA-approved drugs with unexpired patents"),
+    ]
+    for label, value in summary_data:
+        ws3.append([label, value])
+        if label:
+            ws3.cell(row=ws3.max_row, column=1).font = Font(bold=True, name="Arial")
+
+    ws3.column_dimensions["A"].width = 25
+    ws3.column_dimensions["B"].width = 55
+
+    # Save
+    wb.save(xlsx_path)
+    print(f"  ✓ Excel → {xlsx_path}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -993,6 +1130,11 @@ def main():
              "Uses 'cmap_name' column, falls back to 'compound_aliases'.",
     )
     parser.add_argument(
+        "--xlsx", type=str,
+        help="Export batch results to color-coded Excel file "
+             "(use with --batch, e.g. --batch compounds.tsv --xlsx report.xlsx)",
+    )
+    parser.add_argument(
         "--json", action="store_true",
         help="Output in JSON format",
     )
@@ -1042,7 +1184,8 @@ def main():
 
     # ── Batch lookup ─────────────────────────────────────────────────
     if args.batch:
-        _batch_lookup(lookup, args.batch, json_mode=args.json)
+        _batch_lookup(lookup, args.batch, json_mode=args.json,
+                      xlsx_path=args.xlsx)
         return
 
     # ── Query ────────────────────────────────────────────────────────
