@@ -2,7 +2,7 @@
 api/schemas/analysis.py — Pydantic models for analysis endpoints.
 
 J-3: ScoreRequest, ScoreResponse (+ dry-run variants)
-J-4: CompareRequest, CompareResponse (added when J-4 ships)
+J-4: CompareRequest, CompareResponse
 """
 
 from pydantic import BaseModel, Field
@@ -84,3 +84,42 @@ class ScoreResponse(BaseModel):
     # Dry run fields (populated when dry_run=True)
     screening_input: Optional[ScreeningDryRunInput] = None
     analysis_input: Optional[AnalysisDryRunInput] = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# J-4: Compare endpoint
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CompareRequest(BaseModel):
+    patent_id: str
+    config_name: str
+    override_rubric_text: str
+    analysis_model: Optional[str] = None
+
+
+class CompareSideOutput(BaseModel):
+    """One side of the A/B comparison (baseline or override)."""
+    rubric: str
+    is_target_drug: bool
+    delivery_routes: str
+    indications: str
+    claim_scope: str
+    fto_risk: Literal["High", "Medium", "Low"]
+    gap_opportunity: str
+    reasoning: str
+
+
+class CompareFieldDiff(BaseModel):
+    """Per-field diff entry."""
+    match: bool
+    baseline: Optional[str] = None
+    override: Optional[str] = None
+
+
+class CompareResponse(BaseModel):
+    patent_id: str
+    config_name: str
+    baseline: CompareSideOutput
+    override: CompareSideOutput
+    diff: dict[str, CompareFieldDiff]
+    has_differences: bool

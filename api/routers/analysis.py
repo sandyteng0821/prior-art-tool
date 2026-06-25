@@ -2,12 +2,12 @@
 api/routers/analysis.py — Analysis endpoints.
 
 J-3: POST /api/v1/analysis/score — single-patent LLM scoring
-J-4: POST /api/v1/analysis/compare — A/B rubric comparison (future)
+J-4: POST /api/v1/analysis/compare — A/B rubric comparison
 
 LLM logic ported from tools/debug_scoring.py via api/core/llm_bridge.py.
 Does NOT import modules/llm_analyzer.py (D1: module-level side effects).
 
-Refs: task_J3.md, design_api_layer.md
+Refs: task_J3.md, task_J4.md, design_api_layer.md
 """
 
 import asyncio
@@ -29,6 +29,7 @@ from api.core.llm_bridge import (
     make_chain,
     invoke_with_retry,
     preprocess_claims,
+    ANALYSIS_FIELDS,
 )
 from api.schemas.analysis import (
     ScoreRequest,
@@ -38,6 +39,10 @@ from api.schemas.analysis import (
     AnalysisOutput,
     ScreeningDryRunInput,
     AnalysisDryRunInput,
+    CompareRequest,
+    CompareResponse,
+    CompareSideOutput,
+    CompareFieldDiff,
 )
 
 logger = logging.getLogger(__name__)
@@ -303,4 +308,117 @@ def _run_analysis_sync(cfg, patent: dict, claims_input: str, system_prompt: str)
         },
         cfg.LLM_MAX_RETRIES,
         cfg.LLM_RETRY_BASE_SECONDS,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Compare endpoint (J-4)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _result_to_side(result, rubric_label: str) -> CompareSideOutput:
+    """Convert a Pydantic analysis result to a CompareSideOutput."""
+    return CompareSideOutput(
+        rubric=rubric_label,
+        is_target_drug=result.is_target_drug,
+        delivery_routes=result.delivery_routes,
+        indications=result.indications,
+        claim_scope=result.claim_scope,
+        fto_risk=result.fto_risk,
+        gap_opportunity=result.gap_opportunity,
+        reasoning=result.reasoning,
+    )
+
+
+def _build_diff(baseline: CompareSideOutput, override: CompareSideOutput) -> tuple[dict[str, CompareFieldDiff], bool]:
+    """Compare all ANALYSIS_FIELDS between baseline and override. Returns (diff_dict, has_differences)."""
+    diff = {}
+    has_diff = False
+    for field in ANALYSIS_FIELDS:
+        val_a = str(getattr(baseline, field))
+        val_b = str(getattr(override, field))
+        match = val_a == val_b
+        if not match:
+            has_diff = True
+            diff[field] = CompareFieldDiff(match=False, baseline=val_a, override=val_b)
+        else:
+            diff[field] = CompareFieldDiff(match=True)
+    return diff, has_diff
+
+
+@router.post(
+    "/compare",
+    response_model=CompareResponse,
+)
+async def compare_rubrics(
+    req: CompareRequest,
+    conn: sqlite3.Connection = Depends(get_db_conn),
+):
+    """
+    A/B rubric comparison endpoint.
+
+    Runs Stage 2 twice (default rubric vs override rubric) concurrently,
+    returns side-by-side results with per-field diff.
+
+    Mirrors debug_scoring.py --compare logic.
+    """
+    # ── Config resolution ────────────────────────────────────────────────
+    try:
+        cfg = load_config(req.config_name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if req.analysis_model:
+        cfg.ANALYSIS_MODEL = req.analysis_model
+
+    # ── Patent lookup ────────────────────────────────────────────────────
+    loop = asyncio.get_event_loop()
+    patent = await loop.run_in_executor(
+        None, partial(_lookup, conn, req.patent_id)
+    )
+    if not patent:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Patent {req.patent_id} not in DB",
+        )
+
+    # ── Claims preprocessing ─────────────────────────────────────────────
+    claims_input = preprocess_claims(patent, cfg.CLAIMS_MAX_CHARS)
+
+    # ── Rubric interpolation ─────────────────────────────────────────────
+    override_prompt = interpolate_rubric(req.override_rubric_text, cfg)
+    default_prompt = analysis_system_prompt(cfg)
+
+    # ── Run both Stage 2 concurrently (asyncio.gather + run_in_executor) ─
+    try:
+        result_baseline, result_override = await asyncio.gather(
+            loop.run_in_executor(
+                None,
+                partial(_run_analysis_sync, cfg, patent, claims_input, default_prompt),
+            ),
+            loop.run_in_executor(
+                None,
+                partial(_run_analysis_sync, cfg, patent, claims_input, override_prompt),
+            ),
+        )
+    except Exception as e:
+        logger.error("Compare LLM error: %s", e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM call failed: {e}",
+        )
+
+    # ── Build response ───────────────────────────────────────────────────
+    baseline = _result_to_side(result_baseline, "default")
+    override = _result_to_side(result_override, "custom")
+    diff, has_diff = _build_diff(baseline, override)
+
+    return CompareResponse(
+        patent_id=req.patent_id,
+        config_name=req.config_name,
+        baseline=baseline,
+        override=override,
+        diff=diff,
+        has_differences=has_diff,
     )
