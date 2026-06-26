@@ -38,7 +38,10 @@ def init_db() -> None:
                 source               TEXT,
                 fetched_at           TEXT,
                 family_fetched       INTEGER DEFAULT 0,
-                family_of            TEXT
+                family_of            TEXT,
+                filing_date          TEXT,
+                expiry_date          TEXT,
+                expiry_source        TEXT
             );
 
             CREATE TABLE IF NOT EXISTS search_log (
@@ -61,6 +64,9 @@ def init_db() -> None:
             "ALTER TABLE patents ADD COLUMN family_fetched INTEGER DEFAULT 0",
             "ALTER TABLE patents ADD COLUMN family_of TEXT",
             "ALTER TABLE patents ADD COLUMN formulation_snippets TEXT",
+            "ALTER TABLE patents ADD COLUMN filing_date TEXT",
+            "ALTER TABLE patents ADD COLUMN expiry_date TEXT",
+            "ALTER TABLE patents ADD COLUMN expiry_source TEXT",
             "CREATE INDEX IF NOT EXISTS idx_patents_family_of ON patents(family_of)",
         ]:
             try:
@@ -89,12 +95,14 @@ def upsert_patent(patent: dict) -> None:
                 (patent_id, title, abstract, claims,
                  examples_extracted, formulation_snippets,
                  status, year, source, fetched_at,
-                 family_fetched, family_of)
+                 family_fetched, family_of,
+                 filing_date, expiry_date, expiry_source)
             VALUES
                 (:patent_id, :title, :abstract, :claims,
                  :examples_extracted, :formulation_snippets,
                  :status, :year, :source, :fetched_at,
-                 :family_fetched, :family_of)
+                 :family_fetched, :family_of,
+                 :filing_date, :expiry_date, :expiry_source)
             ON CONFLICT(patent_id) DO UPDATE SET
                 title                = excluded.title,
                 abstract             = excluded.abstract,
@@ -109,7 +117,10 @@ def upsert_patent(patent: dict) -> None:
                     WHEN excluded.family_fetched = 1 THEN 1
                     ELSE patents.family_fetched
                 END,
-                family_of            = COALESCE(excluded.family_of, patents.family_of)
+                family_of            = COALESCE(excluded.family_of, patents.family_of),
+                filing_date          = COALESCE(excluded.filing_date, patents.filing_date),
+                expiry_date          = COALESCE(excluded.expiry_date, patents.expiry_date),
+                expiry_source        = COALESCE(excluded.expiry_source, patents.expiry_source)
         """, {
             "patent_id":            patent.get("patent_id", ""),
             "title":                patent.get("title", ""),
@@ -123,6 +134,9 @@ def upsert_patent(patent: dict) -> None:
             "fetched_at":           datetime.now().isoformat(),
             "family_fetched":       patent.get("family_fetched", 0),
             "family_of":            patent.get("family_of", None),
+            "filing_date":          patent.get("filing_date", None),
+            "expiry_date":          patent.get("expiry_date", None),
+            "expiry_source":        patent.get("expiry_source", None),
         })
 
 
@@ -248,6 +262,13 @@ def stats() -> dict:
         by_source      = conn.execute(
             "SELECT source, COUNT(*) as n FROM patents GROUP BY source"
         ).fetchall()
+        has_expiry     = conn.execute(
+            "SELECT COUNT(*) FROM patents WHERE expiry_date IS NOT NULL AND expiry_date != ''"
+        ).fetchone()[0]
+        by_expiry_src  = conn.execute(
+            "SELECT expiry_source, COUNT(*) as n FROM patents "
+            "WHERE expiry_source IS NOT NULL GROUP BY expiry_source"
+        ).fetchall()
     return {
         "total_patents":        total,
         "with_examples":        has_ex,
@@ -255,4 +276,7 @@ def stats() -> dict:
         "family_fetched":       family_fetched,
         "family_members_in_db": has_family_of,
         "by_source":            {r["source"]: r["n"] for r in by_source},
+        "with_expiry_date":     has_expiry,
+        "without_expiry_date":  total - has_expiry,
+        "by_expiry_source":     {r["expiry_source"]: r["n"] for r in by_expiry_src},
     }
