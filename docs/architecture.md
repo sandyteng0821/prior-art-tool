@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
-> Drug Repurposing Patent Analyzer · Current State  
-> Last updated: 2026-06-25 (API layer J-0 through J-5 complete; scoring, compare, deployment guide shipped)
+> Drug Repurposing Patent Analyzer · Current State
+> Last updated: 2026-06-29 (Gap #5/#8: expiry date integration — schema, backfill, output)
 
 ---
 
@@ -14,7 +14,7 @@ Each phase has a distinct responsibility and a clear handoff to the next.
 > for the strategic context behind the formulation evidence subsystem
 > (snippet extraction, two-layer analysis, why not store full description).
 > 
-> 📄 **Active task specs:** See [`./spec/task_A.md`](./spec/task_A.md) through [`./spec/task_I.md`](./spec/task_I_google_patents_jsonl_import.md)
+> 📄 **Active task specs:** See [`./spec/task_A.md`](./spec/task_A.md) through [`./spec/task_J5.md`](./spec/task_J5.md)
 > for individual feature/fix specs. Task H is superseded by Task I (see note in task_H file).
 
 ---
@@ -57,7 +57,7 @@ graph TD
         DB["SQLite  cache/patents.db\nupsert_patent()  ·  [DB hit] cache"]
         SEARCH["Query Interface\nsearch_examples()  search_claims()\nget_formulation_snippets()  stats()"]
         FAMILY_TRACK["✅ Family tracking\nfamily_fetched: 0/1 flag\nfamily_of: parent A1 reference\nmark_family_fetched()\nget_family_members()"]
-        EXPIRY["⚠ Expiry Date  MISSING\nstatus = Unknown fallback"]
+        EXPIRY["✅ Expiry Date\nfiling_date · expiry_date · expiry_source\nbackfill: OB priority + EPO filing+20yr"]
         GP_IMPORT["✅ Task I  IMPLEMENTED\nimport_google_patents_jsonl.py\nKaggle JSONL → cache\nsource = google_patents | mixed_epo_google_patents"]
     end
 
@@ -76,7 +76,7 @@ graph TD
     %% Phase 5
     subgraph P5["Phase 5 · Output Writer (output_writer.py)"]
         CSV["CSV + Excel\nSorted by fto_risk\n🔴🟡🟢 color labels"]
-        SCHEMA["Output Schema\npatent_id · title · year · status\nfto_risk · gap_opportunity · reasoning\n⚠ missing: DrugBank ID · expiry_date"]
+        SCHEMA["Output Schema\npatent_id · title · year · status · expiry_date · expiry_source\nfto_risk · gap_opportunity · reasoning\n⚠ missing: DrugBank ID"]
     end
 
     RULE & LLM --> CSV
@@ -87,7 +87,7 @@ graph TD
     %% Styles
     style FAMILY fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style FAMILY_TRACK fill:#1a3a1a,stroke:#3fb950,color:#3fb950
-    style EXPIRY fill:#3a1a1a,stroke:#f85149,color:#f85149
+    style EXPIRY fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style GP_IMPORT fill:#1a3a1a,stroke:#3fb950,color:#3fb950
     style SCHEMA fill:#2a200a,stroke:#d29922,color:#d29922
     style SNIP fill:#1a3a1a,stroke:#3fb950,color:#3fb950
@@ -203,6 +203,9 @@ CREATE TABLE patents (
     fetched_at           TEXT,
     family_fetched       INTEGER DEFAULT 0,
     family_of            TEXT
+    filing_date          TEXT,   -- YYYY-MM-DD, from EPO biblio or OB
+    expiry_date          TEXT,   -- YYYY-MM-DD, OB exact or filing+20yr
+    expiry_source        TEXT    -- 'orange_book' | 'filing_plus_20' | 'manual'
 );
 ```
 
@@ -215,6 +218,11 @@ Note: `examples_extracted` and `formulation_snippets` are complementary —
 `examples_extracted` keeps the full Examples section for FTO analysis;
 `formulation_snippets` keeps targeted drug × keyword sentences for formulation evidence.
 Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
+
+Expiry date populated via `scripts/backfill_expiry_dates.py` (two-layer:
+Orange Book priority for US NDA patents, EPO filing+20yr fallback for all
+jurisdictions). ~97% coverage; utility models and translation patents
+typically return 404 from EPO biblio.
 
 ---
 
@@ -234,10 +242,10 @@ Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 | 3f | backfill A-series family members (Case 2) | new script | **P1** | ⚠️ Pending | Parents fetched before May 2026 may have missed TW/KR/AU/JP siblings |
 | 3g | `_fetch_and_store_family()` filter widened to accept A-series | `patent_fetcher.py` | **P1** | ✅ Fixed | Was `{B1, B2}`, now `{B1, B2, A1, A2, A}`. Self-reference skip also added. May 2026. |
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
-| 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ❌ Open | status = Unknown fallback |
+| 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ✅ Done | filing_date + expiry_date + expiry_source columns; backfill via OB + EPO filing+20yr. 2026-06. |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
 | 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) now cover most cases. Orphan patents (no EP/US family member found by query, and not in Google scrape) still missed — needs mechanism-based or full-text query strategy (Bug Y). |
-| 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ❌ Open | bio team schema mismatch |
+| 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ⚠️ Partial | expiry_date + expiry_source added 2026-06. drugbank_id still missing. |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
 | 10 | REST API endpoint | `api/` layer | **P2** | ✅ Done | J-0 through J-5 shipped 2026-06-25. 6 endpoints (health, DB lookup, stats, inspect, score, compare). 46-check smoke test. Deployment guide at `docs/api_deployment.md`. |
 | 11 | Reasoning model token budget may need tuning | `llm_analyzer.py` | **P3** | ⚠️ Partial | GPT-5 screening=4000, analysis=8000; some patents still fail if reasoning chain is long |
@@ -255,11 +263,11 @@ P1  Next up
     │   → no API call needed; re-run extraction on existing claims/examples
     ├── Investigate Bug Y (mechanism/structure-described patents) (row 7)
     ├── Accept drug list CSV as input (row 4)
-    └── Add expiry_date field + auto-calculation (row 5)
+    └── Add drugbank_id to output (row 8, remaining half)
 
 P2  Quality and coverage
     ├── Fix rule mode: extract delivery_routes / indications from text
-    ├── Add drugbank_id / expiry_date to output schema
+    ├── Add drugbank_id to output schema (row 8, remaining half)
     └── New toxicity_filter module (deprioritized by bio team)
 
 P3  System integration
