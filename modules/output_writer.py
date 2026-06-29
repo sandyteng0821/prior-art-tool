@@ -4,11 +4,12 @@
 import os
 import re
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 
 OUTPUT_DIR = "output"
 OUTPUT_COLS = [
     "patent_id", "title", "year", "status",
+    "expiry_date", "expiry_source",
     "is_target_drug", "delivery_routes", "indications",
     "fto_risk", "gap_opportunity", "reasoning",
 ]
@@ -76,6 +77,38 @@ def save_results(results: list[dict], prefix: str = "gap_analysis") -> str:
             if fill:
                 for cell in row:
                     cell.fill = fill
+
+        # ── Expiry date conditional formatting ───────────────────────
+        # expired=灰, <1yr=黃, active=綠, no data=不上色
+        expiry_col_idx = OUTPUT_COLS.index("expiry_date") + 1
+        expiry_fills = {
+            "expired":    PatternFill("solid", fgColor="D9D9D9"),  # 灰
+            "expiring":   PatternFill("solid", fgColor="FFF2CC"),  # 黃（<1yr）
+            "active":     PatternFill("solid", fgColor="E2EFDA"),  # 綠
+        }
+        expiry_font_grey = Font(color="808080")  # 灰色字（expired rows）
+        today = date.today()
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            expiry_cell = row[expiry_col_idx - 1]
+            val = expiry_cell.value
+            if not val or not isinstance(val, str):
+                continue
+            try:
+                expiry_d = date.fromisoformat(val)
+            except (ValueError, TypeError):
+                continue
+
+            if expiry_d <= today:
+                # Expired
+                expiry_cell.fill = expiry_fills["expired"]
+                expiry_cell.font = expiry_font_grey
+            elif (expiry_d - today).days <= 365:
+                # Expiring within 1 year
+                expiry_cell.fill = expiry_fills["expiring"]
+            else:
+                # Active
+                expiry_cell.fill = expiry_fills["active"]
 
         # 凍結首行
         ws.freeze_panes = "A2"
