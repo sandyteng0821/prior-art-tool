@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-06-29 (Gap #5/#8: expiry date integration — schema, backfill, output)
+> Last updated: 2026-06-29 (Gap #5 Phase 3: fetch-time date piggyback + year fallback)
 
 ---
 
@@ -120,6 +120,9 @@ graph TD
         │       → EPO family API → fetch all family members
         │         (kind in {B1, B2, A1, A2, A}, self-skip applied)
         │       → upsert with family_of = parent A1
+        │       → piggyback: filing_date + expiry_date + year from
+        │         application-reference / publication-reference (0 extra API calls)
+        │       → parent row updated from self-reference in family response
         │       → mark_family_fetched(parent)
         │
         ├─ If A1/A2 and family_fetched=1  →  [family DB hit]
@@ -142,6 +145,8 @@ graph TD
               → EPO family API → all family members
                 (kind in {B1, B2, A1, A2, A}, self-skip applied)
               → stored with family_of reference
+              → piggyback: filing_date + expiry_date + year (0 extra API calls)
+              → parent row updated from self-reference
               → mark_family_fetched()
 ```
 
@@ -219,10 +224,19 @@ Note: `examples_extracted` and `formulation_snippets` are complementary —
 `formulation_snippets` keeps targeted drug × keyword sentences for formulation evidence.
 Pre-Task-A rows have `formulation_snippets = NULL` pending backfill.
 
-Expiry date populated via `scripts/backfill_expiry_dates.py` (two-layer:
-Orange Book priority for US NDA patents, EPO filing+20yr fallback for all
-jurisdictions). ~97% coverage; utility models and translation patents
-typically return 404 from EPO biblio.
+Expiry date populated via two paths:
+1. `scripts/backfill_expiry_dates.py` (two-layer: Orange Book priority
+   for US NDA patents, EPO filing+20yr fallback for all jurisdictions).
+   ~97% coverage; utility models and translation patents typically
+   return 404 from EPO biblio.
+2. Fetch-time piggyback (Phase 3, 2026-06): `_fetch_and_store_family()`
+   parses filing_date + expiry from family response at fetch time.
+   Zero extra API calls. New patents get dates automatically.
+
+Output `year` column: populated from publication-reference in family
+response for new patents; for old patents with empty year,
+`output_writer.py` falls back to `filing_date[:4]` at display time
+(DB not modified).
 
 ---
 
@@ -242,7 +256,7 @@ typically return 404 from EPO biblio.
 | 3f | backfill A-series family members (Case 2) | new script | **P1** | ⚠️ Pending | Parents fetched before May 2026 may have missed TW/KR/AU/JP siblings |
 | 3g | `_fetch_and_store_family()` filter widened to accept A-series | `patent_fetcher.py` | **P1** | ✅ Fixed | Was `{B1, B2}`, now `{B1, B2, A1, A2, A}`. Self-reference skip also added. May 2026. |
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
-| 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ✅ Done | filing_date + expiry_date + expiry_source columns; backfill via OB + EPO filing+20yr. 2026-06. |
+| 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ✅ Done | Phase 1-2: schema + backfill (OB + EPO filing+20yr). Phase 3: fetch-time piggyback from family response (0 extra API calls). Year bug fixed. 2026-06. |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
 | 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) now cover most cases. Orphan patents (no EP/US family member found by query, and not in Google scrape) still missed — needs mechanism-based or full-text query strategy (Bug Y). |
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ⚠️ Partial | expiry_date + expiry_source added 2026-06. drugbank_id still missing. |
