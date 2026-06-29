@@ -13,6 +13,8 @@ import os
 import re
 import json
 import time
+import logging
+from datetime import datetime, timedelta
 import diskcache
 import epo_ops
 import xmltodict
@@ -22,6 +24,8 @@ from modules.patent_store import get_by_id, upsert_patent, log_search, mark_fami
 from config import TARGET_PRODUCT
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 # ── EPO client 初始化 ─────────────────────────────────────────────────────────
 client = epo_ops.Client(
@@ -174,6 +178,44 @@ def _collect_snippets(claims: str, description: str) -> str:
     return json.dumps(snippets)
 
 
+def _parse_date_from_member(member: dict, ref_key: str) -> str | None:
+    """
+    從 family member 的 publication-reference 或 application-reference
+    解出 date 欄位。回傳 'YYYY-MM-DD' 或 None。
+
+    EPO family biblio response 結構：
+      member -> {ref_key} -> document-id -> [list of formats]
+      每個 document-id 有 @document-id-type = 'docdb' / 'epodoc' / ...
+      date 節點在 docdb format 裡，格式 YYYYMMDD。
+    """
+    refs = member.get(ref_key, {})
+    doc_ids = refs.get("document-id", [])
+    if isinstance(doc_ids, dict):
+        doc_ids = [doc_ids]
+
+    for doc_id in doc_ids:
+        if doc_id.get("@document-id-type") != "docdb":
+            continue
+        raw = doc_id.get("date", {})
+        date_str = raw.get("$", "") if isinstance(raw, dict) else str(raw)
+        if len(date_str) == 8 and date_str.isdigit():
+            return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    return None
+
+
+def _compute_expiry(filing_date_str: str) -> str | None:
+    """
+    filing_date (YYYY-MM-DD) + 20 年 = expiry_date。
+    不考慮 PTE/SPC（那是 backfill OB override 的職責）。
+    """
+    try:
+        filing = datetime.strptime(filing_date_str, "%Y-%m-%d")
+        expiry = filing.replace(year=filing.year + 20)
+        return expiry.strftime("%Y-%m-%d")
+    except (ValueError, OverflowError):
+        return None
+
+
 def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
     """
     查詢優先順序：本地 DB → EPO API。
@@ -187,7 +229,16 @@ def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
         if kind in ("A1", "A2"):
             if not stored.get("family_fetched"):
                 # 還沒展開過，打 family API
-                family_members = _fetch_and_store_family(patent_id, stored.get("year", ""))
+                family_members, parent_dates = _fetch_and_store_family(patent_id, stored.get("year", ""))
+                # Phase 3: 回寫 parent 的 date 欄位（from self-reference in family response）
+                if parent_dates.get("filing_date") and not stored.get("filing_date"):
+                    upsert_patent({
+                        **stored,
+                        "filing_date":   parent_dates["filing_date"],
+                        "expiry_date":   parent_dates.get("expiry_date"),
+                        "expiry_source": "filing_plus_20",
+                        "year":          parent_dates.get("year") or stored.get("year", ""),
+                    })
                 stored["_family_members"] = family_members
             else:
                 # 已展開過，直接從 DB 拿
@@ -252,19 +303,38 @@ def _get_or_fetch(patent_id: str, year: str = "") -> dict | None:
         # ── 5. 展開 patent family（新增）─────────────────────────────────────
         # _fetch_and_store_family(patent_id, year)
         # family 展開，把結果存起來供 fetch_patents 使用
-        family_members = _fetch_and_store_family(patent_id, year) 
+        family_members, parent_dates = _fetch_and_store_family(patent_id, year)
+        # Phase 3: 回寫 parent 的 date 欄位
+        if parent_dates.get("filing_date"):
+            upsert_patent({
+                **patent,
+                "filing_date":   parent_dates["filing_date"],
+                "expiry_date":   parent_dates.get("expiry_date"),
+                "expiry_source": "filing_plus_20",
+                "year":          parent_dates.get("year") or year,
+            })
+            patent["year"] = parent_dates.get("year") or year
         # 把 family members 附在 patent 上回傳
         patent["_family_members"] = family_members
 
     return patent
 
 
-def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
+def _fetch_and_store_family(patent_id: str, year: str = "") -> tuple[list[dict], dict]:
     """
     呼叫 EPO family API，把所有 family members 存進 DB。
     只在 A1/A2 時呼叫，避免無限遞迴。
+
+    Phase 3: piggyback filing_date + expiry_date + year from family
+    response's application-reference / publication-reference.
+
+    Returns:
+        (fetched_members, parent_dates)
+        parent_dates = {"filing_date": ..., "expiry_date": ..., "year": ...}
+        parsed from the self-reference member in the family response.
     """
     fetched_members = []
+    parent_dates: dict = {}
     number, _ = _parse_patent_id(patent_id)
     try:
         resp = client.family(
@@ -298,16 +368,40 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                     continue
 
                 member_id = f"{country}{num}{kind}"
-                # Skip self
+
+                # ── Parse dates from this member (Phase 3) ──────────
+                filing_date = _parse_date_from_member(member, "application-reference")
+                pub_date    = _parse_date_from_member(member, "publication-reference")
+                member_year = pub_date[:4] if pub_date else ""
+                expiry_date = _compute_expiry(filing_date) if filing_date else None
+
+                # Skip self — but collect parent dates first
                 if member_id == patent_id:
+                    if filing_date:
+                        parent_dates = {
+                            "filing_date":  filing_date,
+                            "expiry_date":  expiry_date,
+                            "year":         member_year,
+                        }
+                    elif not parent_dates:
+                        log.warning("Phase 3: self-ref %s has no filing_date in family response", patent_id)
                     continue
-                # 已在 DB 就跳過，避免重複抓
+
+                # 已在 DB 就跳過，避免重複抓（但補 family_of + dates if missing）
                 existing = get_by_id(member_id)
                 if existing:
-                    # 補 family_of（如果還沒有的話）
+                    update_fields = {}
                     if not existing.get("family_of"):
-                        upsert_patent({**existing, "family_of": patent_id})
-                        existing["family_of"] = patent_id
+                        update_fields["family_of"] = patent_id
+                    if filing_date and not existing.get("filing_date"):
+                        update_fields["filing_date"]   = filing_date
+                        update_fields["expiry_date"]   = expiry_date
+                        update_fields["expiry_source"] = "filing_plus_20"
+                    if member_year and not existing.get("year"):
+                        update_fields["year"] = member_year
+                    if update_fields:
+                        upsert_patent({**existing, **update_fields})
+                        existing.update(update_fields)
                     fetched_members.append(existing)
                     continue
 
@@ -334,18 +428,23 @@ def _fetch_and_store_family(patent_id: str, year: str = "") -> None:
                         "examples_extracted":   examples if isinstance(examples, str) else "",
                         "formulation_snippets": _collect_snippets(claims_str, description_str),
                         "status":               "Active",
-                        "year":                 year,
+                        "year":                 member_year or year,
                         "source":               "epo",
                         "family_of":            patent_id,
+                        "filing_date":          filing_date,
+                        "expiry_date":          expiry_date,
+                        "expiry_source":        "filing_plus_20" if filing_date else None,
                     }
                     upsert_patent(patent_dict)
-                    fetched_members.append(patent_dict)    
+                    fetched_members.append(patent_dict)
+                elif filing_date:
+                    log.info("Phase 3: %s has filing_date but no title/abstract, skipped", member_id)
                 time.sleep(0.5)
 
     except Exception as e:
         print(f"  [family API] {patent_id} failed: {e}")
     mark_family_fetched(patent_id)
-    return fetched_members
+    return fetched_members, parent_dates
 
 
 # ── Examples 解析 ─────────────────────────────────────────────────────────────

@@ -48,6 +48,10 @@ def save_results(results: list[dict], prefix: str = "gap_analysis") -> str:
 
     # 排序：High → Medium → Low，同風險內依年份新到舊
     df["_risk_sort"] = df["fto_risk"].map(RISK_ORDER).fillna(3)
+    # Year fallback: 舊 patent 可能 year 為空，用 filing_date 前四碼補
+    if "filing_date" in df.columns:
+        df["year"] = df["year"].replace("", pd.NA)
+        df["year"] = df["year"].fillna(df["filing_date"].str[:4])
     df["year"] = pd.to_numeric(df["year"], errors="coerce")
     df = df.sort_values(["_risk_sort", "year"], ascending=[True, False])
     df = df.drop(columns=["_risk_sort"])
