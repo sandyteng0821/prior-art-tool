@@ -80,7 +80,21 @@ python3 -m tools.parse_orange_book --batch compoundinfo_beta.txt
 # JSON 輸出（方便下游分析）
 python3 -m tools.parse_orange_book --batch compoundinfo_beta.txt --json > ob_status.json
 
-# ── 8. 注意事項 ──────────────────────────────────────────────────────────────
+# ── 8. Dump 全部 Orange Book 藥物 ───────────────────────────────────────────
+# 把 Orange Book 裡所有 drug 的專利到期狀態倒出來（不需要外部 compound list）
+# Terminal 表格
+python3 -m tools.parse_orange_book --dump
+
+# 色標 Excel（交給同事最方便）
+python3 -m tools.parse_orange_book --dump --xlsx output/ob_drugs.xlsx
+
+# JSON（給 downstream script 吃）
+python3 -m tools.parse_orange_book --dump --json > ob_all_drugs.json
+
+# 搭配 --stats
+python3 -m tools.parse_orange_book --stats --dump
+
+# ── 9. 注意事項 ──────────────────────────────────────────────────────────────
 #
 # Orange Book 的 *PED 記錄：
 #   某些 patent number 帶 *PED 後綴（例如 12016858*PED），

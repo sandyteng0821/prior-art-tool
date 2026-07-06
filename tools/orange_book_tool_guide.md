@@ -133,6 +133,22 @@ python3 parse_orange_book.py --stats
 python3 parse_orange_book.py --download
 ```
 
+### 匯出所有 Orange Book 藥物的專利狀態
+
+```bash
+# Terminal 表格（所有 drug，一行一個，含 patent 數量和到期日）
+python3 parse_orange_book.py --dump
+
+# Excel（色標：綠=ACTIVE、黃=EXPIRING、灰=EXPIRED）
+python3 parse_orange_book.py --dump --xlsx ob_drugs.xlsx
+
+# JSON
+python3 parse_orange_book.py --dump --json > ob_all_drugs.json
+```
+
+跟 `--batch` 的差異：`--batch` 是拿你的 compound list 去比對 Orange Book，
+`--dump` 是把 Orange Book 自己所有的 drug 倒出來。不需要外部輸入檔。
+
 ---
 
 ## Name Matching 說明

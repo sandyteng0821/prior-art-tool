@@ -43,6 +43,11 @@ Usage:
     # Stats (patent count, drug count, date range)
     python3 -m tools.parse_orange_book --stats
 
+    # Dump all drugs with patent expiry status
+    python3 -m tools.parse_orange_book --dump
+    python3 -m tools.parse_orange_book --dump --xlsx ob_drugs.xlsx
+    python3 -m tools.parse_orange_book --dump --json
+
 Constraints:
     - Read-only tool (does not modify patents.db)
     - Downloaded ZIP → cache/orange_book/ (gitignored)
@@ -976,6 +981,111 @@ def _export_batch_xlsx(results: list[dict], xlsx_path: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Dump all drugs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _dump_all_drugs(lookup: dict, json_mode: bool = False,
+                    xlsx_path: str | None = None):
+    """
+    Dump all drugs in Orange Book with patent expiry status.
+
+    Reshapes patent-keyed lookup into drug-level summary: one row per
+    trade name, with patent count, earliest/latest expiry, and status.
+    Reuses _export_batch_xlsx() for Excel output.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    one_year = (datetime.now().replace(year=datetime.now().year + 1)
+                .strftime("%Y-%m-%d"))
+
+    # ── Build drug-level summary from reverse index ──────────────────
+    index = _build_drug_index(lookup)
+    results = []
+
+    for name_upper, drug_entries in sorted(index.items()):
+        # Deduplicate patents: keep latest expiry per patent_number
+        seen: dict[str, dict] = {}
+        for e in drug_entries:
+            pn = e["patent_number"]
+            if (pn not in seen
+                    or (e["expire_date"] or "") > (seen[pn].get("expire_date") or "")):
+                seen[pn] = e
+
+        patents = list(seen.values())
+        dates = [p["expire_date"] for p in patents if p["expire_date"]]
+        earliest = min(dates) if dates else None
+        latest = max(dates) if dates else None
+
+        if not latest:
+            status = "UNKNOWN"
+        elif latest < today:
+            status = "⚪ EXPIRED"
+        elif latest <= one_year:
+            status = "🟡 EXPIRING SOON"
+        else:
+            status = "🟢 ACTIVE"
+
+        # Use original case from first entry (not uppercased index key)
+        original_name = drug_entries[0].get("drug_name", name_upper)
+
+        results.append({
+            "query": original_name,
+            "matched_drug": original_name,
+            "active_ingredient": drug_entries[0].get("active_ingredient", ""),
+            "n_patents": len(patents),
+            "earliest_expiry": earliest,
+            "latest_expiry": latest,
+            "status": status,
+            "patent_numbers": sorted(seen.keys()),
+        })
+
+    # Sort: Active first, then Expiring, then Expired
+    status_order = {"🟢 ACTIVE": 0, "🟡 EXPIRING SOON": 1,
+                    "⚪ EXPIRED": 2, "UNKNOWN": 3}
+    results.sort(key=lambda r: (
+        status_order.get(r["status"], 4),
+        r.get("latest_expiry") or "9999",
+    ))
+
+    # ── Output ───────────────────────────────────────────────────────
+    if json_mode:
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        return
+
+    # Terminal table
+    print()
+    print(f"  {'Drug Name':<28} {'Active Ingredient':<32} "
+          f"{'Patents':>7}  {'Latest Expiry':<14} Status")
+    print(f"  {'─' * 100}")
+
+    for r in results:
+        name = r["query"]
+        if len(name) > 26:
+            name = name[:25] + "…"
+        ingredient = r["active_ingredient"]
+        if len(ingredient) > 30:
+            ingredient = ingredient[:29] + "…"
+        latest = r["latest_expiry"] or "—"
+        status = r["status"]
+
+        print(f"  {name:<28} {ingredient:<32} "
+              f"{r['n_patents']:>7}  {latest:<14} {status}")
+
+    # Summary line
+    print(f"  {'─' * 100}")
+    active = sum(1 for r in results if r["status"] == "🟢 ACTIVE")
+    expiring = sum(1 for r in results if r["status"] == "🟡 EXPIRING SOON")
+    expired = sum(1 for r in results if r["status"] == "⚪ EXPIRED")
+    print(f"  Total: {len(results)} drugs  |  "
+          f"🟢 Active: {active}  |  🟡 Expiring (<1yr): {expiring}  |  "
+          f"⚪ Expired: {expired}")
+    print()
+
+    # ── Excel export (reuses batch xlsx writer) ──────────────────────
+    if xlsx_path:
+        _export_batch_xlsx(results, xlsx_path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # EPO comparison
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1130,9 +1240,15 @@ def main():
              "Uses 'cmap_name' column, falls back to 'compound_aliases'.",
     )
     parser.add_argument(
+        "--dump", action="store_true",
+        help="Dump all drugs in Orange Book with patent expiry status. "
+             "Combine with --json or --xlsx for machine-readable output.",
+    )
+    parser.add_argument(
         "--xlsx", type=str,
-        help="Export batch results to color-coded Excel file "
-             "(use with --batch, e.g. --batch compounds.tsv --xlsx report.xlsx)",
+        help="Export results to color-coded Excel file "
+             "(use with --batch or --dump, "
+             "e.g. --dump --xlsx ob_drugs.xlsx)",
     )
     parser.add_argument(
         "--json", action="store_true",
@@ -1152,8 +1268,8 @@ def main():
             sys.exit(1)
         print()
 
-        # If no IDs to query and no --stats and no --drug/--batch, we're done
-        if not args.ids and not args.stats and not args.drug and not args.batch:
+        # If no IDs to query and no --stats and no --drug/--batch/--dump, we're done
+        if not args.ids and not args.stats and not args.drug and not args.batch and not args.dump:
             return
 
     elif args.parse_only:
@@ -1162,7 +1278,7 @@ def main():
         if not lookup:
             sys.exit(1)
         print()
-        if not args.ids and not args.stats and not args.drug and not args.batch:
+        if not args.ids and not args.stats and not args.drug and not args.batch and not args.dump:
             return
 
     else:
@@ -1174,8 +1290,13 @@ def main():
     # ── Stats ────────────────────────────────────────────────────────
     if args.stats:
         _print_stats(lookup)
-        if not args.ids and not args.drug:
+        if not args.ids and not args.drug and not args.dump:
             return
+
+    # ── Dump all drugs ───────────────────────────────────────────────
+    if args.dump:
+        _dump_all_drugs(lookup, json_mode=args.json, xlsx_path=args.xlsx)
+        return
 
     # ── Drug lookup ──────────────────────────────────────────────────
     if args.drug:
