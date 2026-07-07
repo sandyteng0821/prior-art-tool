@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-06-29 (Gap #5 Phase 3: fetch-time date piggyback + year fallback)
+> Last updated: 2026-07-07 (Task L: expert-reviewed patent import, --allow-insert; ta= query scope documented)
 
 ---
 
@@ -258,7 +258,7 @@ response for new patents; for old patents with empty year,
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
 | 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ✅ Done | Phase 1-2: schema + backfill (OB + EPO filing+20yr). Phase 3: fetch-time piggyback from family response (0 extra API calls). Year bug fixed. 2026-06. |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
-| 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) now cover most cases. Orphan patents (no EP/US family member found by query, and not in Google scrape) still missed — needs mechanism-based or full-text query strategy (Bug Y). |
+| 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) + expert manual review with --allow-insert (Task L) now cover most cases. Remaining gap: patents discoverable only via fulltext search (content in claims/description, not title/abstract) — L3b pending validation. |
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ⚠️ Partial | expiry_date + expiry_source added 2026-06. drugbank_id still missing. |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
 | 10 | REST API endpoint | `api/` layer | **P2** | ✅ Done | J-0 through J-5 shipped 2026-06-25. 6 endpoints (health, DB lookup, stats, inspect, score, compare). 46-check smoke test. Deployment guide at `docs/api_deployment.md`. |
@@ -359,6 +359,25 @@ Coverage as of 2026-06 (Pemirolast project, 369 rows total): 168 rows
 imported from Google Patents, 151 already had EPO content, 50 remain
 empty (Google had no content either, or are EP/WO rows EPO didn't
 capture).
+
+### EPO ta= Query Scope — Title + Abstract Only
+
+EPO OPS `ta=` 搜尋只索引 title 和 abstract，不含 claims 或
+description。即使專利在 EPO 系統中有完整 fulltext，只要關鍵內容
+不在 title/abstract 裡，`ta=` query 就搜不到。
+
+This is distinct from the fulltext licensing gap above: even for
+jurisdictions where EPO has full content, the search index only covers
+title + abstract fields.
+
+Case: US9415051B1 — abstract mentions "airway hyperresponsiveness",
+but claim 5 explicitly names Pemirolast for treating IPF.
+`ta=pemirolast` finds it, but `ta=pemirolast AND ta=IPF` does not.
+
+Workaround (Task L, 2026-07): expert manual review → off-machine
+scrape or EPO fetch → `--allow-insert` import → `search_log` entry
+with `query='will_manual_review'`. Scalable alternative (Google Patents
+fulltext search, L3b) pending validation.
 
 ---
 
