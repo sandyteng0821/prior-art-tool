@@ -27,6 +27,10 @@ Design:
 - Write claims → claims, full_text → examples_extracted
   (chosen over schema migration: examples_extracted already feeds
   backfill_snippets; new source plugs into existing pipeline unchanged)
+- --allow-insert: permits inserting patents not yet in DB (e.g. patents
+  found by manual expert review that EPO ta= search never returned).
+  Without this flag, such rows are skip_not_in_db (original Task I
+  behavior preserved by default).
 
 After running this, re-run scripts/backfill_snippets.py to refresh
 formulation_snippets for the newly populated rows.
@@ -35,6 +39,8 @@ Usage:
     python -m scripts.import_google_patents_jsonl --input data/global_patents_archive.jsonl --dry-run
     python -m scripts.import_google_patents_jsonl --input data/global_patents_archive.jsonl --apply
     python -m scripts.import_google_patents_jsonl --input data/global_patents_archive.jsonl --apply --limit 20
+    python -m scripts.import_google_patents_jsonl --input data/will_review.jsonl --allow-insert --dry-run
+    python -m scripts.import_google_patents_jsonl --input data/will_review.jsonl --allow-insert --apply
 
 Refs:
 - docs/spec/task_H_google_patents_l2.md (original spec; this script
@@ -84,13 +90,18 @@ def _is_missing(value) -> bool:
     return value in MISSING_SENTINELS
 
 
-def _classify(record: dict, existing_claims: str | None) -> str:
+def _classify(
+    record: dict,
+    existing_claims: str | None,
+    allow_insert: bool = False,
+) -> str:
     """
     Decide what to do with a JSONL record. Returns a reason string:
-      'apply'          — write to DB
+      'apply'          — update existing DB row
+      'insert'         — create new DB row (only when allow_insert=True)
       'skip_dirty'     — title indicates fetch error
       'skip_jurisdiction' — EP/WO, leave EPO data alone
-      'skip_not_in_db' — patent_id not in local cache
+      'skip_not_in_db' — patent_id not in local cache (and allow_insert=False)
       'skip_has_claims' — DB already has claims, don't overwrite
       'skip_no_useful_content' — both claims and full_text are missing
     """
@@ -104,7 +115,15 @@ def _classify(record: dict, existing_claims: str | None) -> str:
         return "skip_jurisdiction"
 
     if existing_claims is None:
-        return "skip_not_in_db"
+        # Patent not in DB. Original behavior: skip.
+        # With --allow-insert: check content before inserting.
+        if not allow_insert:
+            return "skip_not_in_db"
+        claims = record.get("claims")
+        full_text = record.get("full_text")
+        if _is_missing(claims) and _is_missing(full_text):
+            return "skip_no_useful_content"
+        return "insert"
 
     if existing_claims.strip():
         return "skip_has_claims"
@@ -158,6 +177,58 @@ def _fetch_existing(
     return claims, examples
 
 
+def _apply_insert(
+    conn: sqlite3.Connection,
+    record: dict,
+) -> None:
+    """
+    Insert a new patent row from JSONL. Used when --allow-insert is set
+    and the patent_id doesn't exist in DB (expert-identified patents that
+    EPO ta= search never returned).
+
+    Maps JSONL fields to DB schema:
+      requested_id     → patent_id
+      title            → title
+      abstract         → abstract
+      claims           → claims
+      full_text        → examples_extracted
+      publication_date → year (first 4 chars)
+
+    Source is always 'google_patents' (no hybrid case — row is new).
+    family_fetched = 0 (no family expansion yet).
+    formulation_snippets = NULL (to be filled by backfill_snippets).
+    """
+    now = datetime.now().isoformat()
+    patent_id = record.get("requested_id", "")
+    title = record.get("title")
+    abstract = record.get("abstract")
+    claims = record.get("claims")
+    full_text = record.get("full_text")
+    pub_date = record.get("publication_date")
+
+    # Extract year from publication_date (e.g. "2016-06-14" → "2016")
+    year = None
+    if pub_date and pub_date not in MISSING_SENTINELS:
+        year = pub_date[:4] if len(pub_date) >= 4 else None
+
+    conn.execute(
+        """INSERT INTO patents (
+               patent_id, title, abstract, claims, examples_extracted,
+               source, fetched_at, year, family_fetched, formulation_snippets
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)""",
+        (
+            patent_id,
+            None if _is_missing(title) else title,
+            None if _is_missing(abstract) else abstract,
+            None if _is_missing(claims) else claims,
+            None if _is_missing(full_text) else full_text,
+            SOURCE_TAG,
+            now,
+            year,
+        ),
+    )
+
+
 def _apply_update(
     conn: sqlite3.Connection,
     patent_id: str,
@@ -208,9 +279,15 @@ def _apply_update(
     )
 
 
-def run(input_path: Path, apply: bool, limit: int | None) -> int:
+def run(
+    input_path: Path,
+    apply: bool,
+    limit: int | None,
+    allow_insert: bool = False,
+) -> int:
     counts: Counter = Counter()
     sample_apply: list[str] = []
+    sample_insert: list[str] = []
 
     conn = _conn()
     try:
@@ -218,23 +295,28 @@ def run(input_path: Path, apply: bool, limit: int | None) -> int:
         for line_no, rec in _load_jsonl(input_path):
             patent_id = rec.get("requested_id", "")
             existing_claims, existing_examples = _fetch_existing(conn, patent_id)
-            verdict = _classify(rec, existing_claims)
+            verdict = _classify(rec, existing_claims, allow_insert=allow_insert)
             counts[verdict] += 1
 
-            if verdict != "apply":
+            if verdict not in ("apply", "insert"):
                 continue
 
-            if len(sample_apply) < 5:
+            if verdict == "apply" and len(sample_apply) < 5:
                 sample_apply.append(patent_id)
+            if verdict == "insert" and len(sample_insert) < 5:
+                sample_insert.append(patent_id)
 
             if apply:
-                _apply_update(
-                    conn,
-                    patent_id,
-                    rec.get("claims"),
-                    rec.get("full_text"),
-                    existing_examples or "",
-                )
+                if verdict == "insert":
+                    _apply_insert(conn, rec)
+                else:
+                    _apply_update(
+                        conn,
+                        patent_id,
+                        rec.get("claims"),
+                        rec.get("full_text"),
+                        existing_examples or "",
+                    )
                 applied += 1
                 if limit is not None and applied >= limit:
                     print(f"  reached --limit {limit}, stopping")
@@ -250,10 +332,12 @@ def run(input_path: Path, apply: bool, limit: int | None) -> int:
     for verdict, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         print(f"  {verdict:30s} {n}")
     if sample_apply:
-        print(f"\n  apply sample (first 5): {sample_apply}")
+        print(f"\n  update sample (first 5): {sample_apply}")
+    if sample_insert:
+        print(f"\n  insert sample (first 5): {sample_insert}")
     print(f"\nMode: {'APPLY (DB written)' if apply else 'DRY-RUN (no DB write)'}")
 
-    return counts.get("apply", 0)
+    return applied
 
 
 def main() -> int:
@@ -263,22 +347,34 @@ def main() -> int:
     mode.add_argument("--dry-run", action="store_true", help="Classify only, no DB write")
     mode.add_argument("--apply", action="store_true", help="Write to DB + audit log")
     p.add_argument("--limit", type=int, default=None, help="Cap number of rows applied (testing)")
+    p.add_argument(
+        "--allow-insert",
+        action="store_true",
+        help="Allow inserting patents not already in DB (for expert-identified "
+             "patents that EPO ta= search never returned). Without this flag, "
+             "such rows are classified as skip_not_in_db.",
+    )
     args = p.parse_args()
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
         return 2
 
-    args_dict = {"input": str(args.input), "apply": args.apply, "limit": args.limit}
+    args_dict = {
+        "input": str(args.input),
+        "apply": args.apply,
+        "limit": args.limit,
+        "allow_insert": args.allow_insert,
+    }
 
     if args.dry_run:
-        run(args.input, apply=False, limit=args.limit)
+        run(args.input, apply=False, limit=args.limit, allow_insert=args.allow_insert)
         return 0
 
     # apply path: audit log wrap
     run_id = start_run(SCRIPT_NAME, CASE_TYPE, args_dict)
     try:
-        applied_n = run(args.input, apply=True, limit=args.limit)
+        applied_n = run(args.input, apply=True, limit=args.limit, allow_insert=args.allow_insert)
         finish_run(
             run_id,
             rows_affected=applied_n,
