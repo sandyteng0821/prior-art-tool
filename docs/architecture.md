@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-07-07 (Task L: expert-reviewed patent import, --allow-insert; ta= query scope documented)
+> Last updated: 2026-07-16 (tools: batch_epo_probe, compare_coverage; validation: GPP+IPF source coverage analysis)
 
 ---
 
@@ -258,7 +258,7 @@ response for new patents; for old patents with empty year,
 | 4 | Single-drug config only | `config.py` + `main.py` | **P1** | ❌ Open | bio team pipeline blocker |
 | 5 | Patent expiry date not calculated | `patent_store.py` | **P1** | ✅ Done | Phase 1-2: schema + backfill (OB + EPO filing+20yr). Phase 3: fetch-time piggyback from family response (0 extra API calls). Year bug fixed. 2026-06. |
 | 6 | Rule mode delivery_routes / indications hardcoded | `llm_analyzer.py` | **P2** | ❌ Open | config values not text-extracted |
-| 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) + expert manual review with --allow-insert (Task L) now cover most cases. Remaining gap: patents discoverable only via fulltext search (content in claims/description, not title/abstract) — L3b pending validation. |
+| 7 | AU / TW / KR / JP coverage incomplete | `query_builder.py` + EPO indexing | **P2** | ⚠️ Partially resolved | Family expansion (3g) + Google Patents JSONL supplement (Task I) + expert manual review with --allow-insert (Task L) now cover most cases. Remaining gap: patents discoverable only via fulltext search (content in claims/description, not title/abstract) — L3b pending validation. 2026-07-16: GP vs EPO coverage validated on 584 expert patents — see `docs/validation/coverage_analysis_gpp_ipf_20260716.md`. |
 | 8 | Output missing `drugbank_id` / `expiry_date` | `output_writer.py` | **P2** | ⚠️ Partial | expiry_date + expiry_source added 2026-06. drugbank_id still missing. |
 | 9 | Toxicity filtering absent | new module needed | **P2** | ❌ Open | deprioritized by bio team |
 | 10 | REST API endpoint | `api/` layer | **P2** | ✅ Done | J-0 through J-5 shipped 2026-06-25. 6 endpoints (health, DB lookup, stats, inspect, score, compare). 46-check smoke test. Deployment guide at `docs/api_deployment.md`. |
@@ -607,3 +607,31 @@ Complementary to `inspect_patent` (data layer) — debug_scoring is the
 judgment layer. See `docs/spec/spec_debug_scoring.md` for full design spec.
  
 Origin: US9415051B1 risk underscoring investigation (2026-06-17).
+
+### `tools/batch_epo_probe.py`
+
+Batch EPO coverage probe via inspect API for a patent ID list.
+
+- Reads ID list from txt file (one per line, `#` comments, comma/semicolon ok)
+- Calls `/api/v1/patents/inspect` per patent, classifies into coverage buckets
+- Outputs per-patent line + jurisdiction × coverage summary
+- Optional `--output-jsonl` for downstream comparison
+- Read-only, zero DB mutation; delay configurable (`--delay`, default 0.6s)
+
+Run: `python3 tools/batch_epo_probe.py data/plainid/IPF_idlist_20260709.txt -o scratch/epo_probe_ipf.jsonl`
+
+Requires API running (`docker compose up -d`).
+
+### `tools/compare_coverage.py`
+
+Compare Google Patents JSONL vs EPO probe JSONL coverage for the same patent set.
+
+- Reads two JSONL files (GP scraper output + batch_epo_probe output)
+- Matches by patent ID, classifies each source into coverage buckets
+- Three modes: `summary` (jurisdiction × source matrix), `detail` (per-patent winner), `all`
+- Reports union coverage (GP ∪ EPO) and no-data breakdown
+- Read-only, no DB dependency
+
+Run: `python3 tools/compare_coverage.py --gp data/global_patents_archive_IPF.jsonl --epo scratch/epo_probe_ipf.jsonl --mode all`
+
+Origin: GPP+IPF coverage analysis 2026-07-16. See `docs/validation/coverage_analysis_gpp_ipf_20260716.md`.
