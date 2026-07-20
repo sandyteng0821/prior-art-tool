@@ -134,9 +134,9 @@ def epo_chars(rec: dict) -> dict:
         return {"abstract": 0, "claims": 0, "examples": 0}
     dc = rec.get("data_completeness", {})
     return {
-        "abstract": dc.get("abstract_chars", 0),
-        "claims": dc.get("claims_chars", 0),
-        "examples": dc.get("examples_chars", 0),
+        "abstract": rec.get("abstract_chars") or dc.get("abstract_chars", 0),
+        "claims":   rec.get("claims_chars")   or dc.get("claims_chars", 0),
+        "examples": rec.get("examples_chars") or dc.get("examples_chars", 0),
     }
 
 
