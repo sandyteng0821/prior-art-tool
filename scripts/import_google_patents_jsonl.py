@@ -31,6 +31,10 @@ Design:
   found by manual expert review that EPO ta= search never returned).
   Without this flag, such rows are skip_not_in_db (original Task I
   behavior preserved by default).
+- --project + --query: when provided, automatically write search_log
+  entries for each inserted/updated patent, so backfill_snippets
+  --project can find them without manual SQL. (Task M improvement;
+  resolves Task L "未來改善方向" item.)
 
 After running this, re-run scripts/backfill_snippets.py to refresh
 formulation_snippets for the newly populated rows.
@@ -41,6 +45,8 @@ Usage:
     python -m scripts.import_google_patents_jsonl --input data/global_patents_archive.jsonl --apply --limit 20
     python -m scripts.import_google_patents_jsonl --input data/will_review.jsonl --allow-insert --dry-run
     python -m scripts.import_google_patents_jsonl --input data/will_review.jsonl --allow-insert --apply
+    python -m scripts.import_google_patents_jsonl --input data/expert_batch.jsonl --allow-insert --apply \\
+        --project 'Pemirolast_吸入劑治療特發性肺纖維化_(IPF)' --query will_expert_batch
 
 Refs:
 - docs/spec/task_H_google_patents_l2.md (original spec; this script
@@ -279,13 +285,43 @@ def _apply_update(
     )
 
 
+def _log_search(
+    conn: sqlite3.Connection,
+    project: str,
+    query: str,
+    patent_id: str,
+) -> None:
+    """
+    Write a search_log entry so backfill_snippets --project can find
+    this patent. Uses INSERT OR IGNORE to be idempotent — re-running
+    the importer on the same file won't create duplicate entries.
+
+    Note: search_log has no UNIQUE constraint on (patent_id, project, query),
+    so we check for existing entry before inserting to avoid duplicates.
+    """
+    existing = conn.execute(
+        "SELECT 1 FROM search_log WHERE patent_id = ? AND project = ?",
+        (patent_id, project),
+    ).fetchone()
+    if existing:
+        return
+    conn.execute(
+        "INSERT INTO search_log (project, query, patent_id, searched_at) "
+        "VALUES (?, ?, ?, ?)",
+        (project, query, patent_id, datetime.now().isoformat()),
+    )
+
+
 def run(
     input_path: Path,
     apply: bool,
     limit: int | None,
     allow_insert: bool = False,
+    project: str | None = None,
+    query: str = "will_manual_review",
 ) -> int:
     counts: Counter = Counter()
+    search_log_count = 0
     sample_apply: list[str] = []
     sample_insert: list[str] = []
 
@@ -317,6 +353,12 @@ def run(
                         rec.get("full_text"),
                         existing_examples or "",
                     )
+
+                # Auto-write search_log when --project is provided
+                if project:
+                    _log_search(conn, project, query, patent_id)
+                    search_log_count += 1
+
                 applied += 1
                 if limit is not None and applied >= limit:
                     print(f"  reached --limit {limit}, stopping")
@@ -335,6 +377,8 @@ def run(
         print(f"\n  update sample (first 5): {sample_apply}")
     if sample_insert:
         print(f"\n  insert sample (first 5): {sample_insert}")
+    if project and apply:
+        print(f"\n  search_log entries written: {search_log_count}  (project={project}, query={query})")
     print(f"\nMode: {'APPLY (DB written)' if apply else 'DRY-RUN (no DB write)'}")
 
     return applied
@@ -354,31 +398,69 @@ def main() -> int:
              "patents that EPO ta= search never returned). Without this flag, "
              "such rows are classified as skip_not_in_db.",
     )
+    p.add_argument(
+        "--project",
+        type=str,
+        default=None,
+        help="Project name for search_log entries. When provided, each "
+             "inserted/updated patent gets a search_log row so that "
+             "backfill_snippets --project can find it. "
+             "Example: 'Pemirolast_吸入劑治療特發性肺纖維化_(IPF)'",
+    )
+    p.add_argument(
+        "--query",
+        type=str,
+        default="will_manual_review",
+        help="Query string for search_log entries (default: 'will_manual_review'). "
+             "Per Task L provenance convention.",
+    )
     args = p.parse_args()
 
     if not args.input.exists():
         print(f"ERROR: input file not found: {args.input}", file=sys.stderr)
         return 2
 
+    if args.project and args.dry_run:
+        print(f"  NOTE: --project has no effect in dry-run mode (search_log not written)")
+
     args_dict = {
         "input": str(args.input),
         "apply": args.apply,
         "limit": args.limit,
         "allow_insert": args.allow_insert,
+        "project": args.project,
+        "query": args.query,
     }
 
     if args.dry_run:
-        run(args.input, apply=False, limit=args.limit, allow_insert=args.allow_insert)
+        run(
+            args.input,
+            apply=False,
+            limit=args.limit,
+            allow_insert=args.allow_insert,
+            project=args.project,
+            query=args.query,
+        )
         return 0
 
     # apply path: audit log wrap
     run_id = start_run(SCRIPT_NAME, CASE_TYPE, args_dict)
     try:
-        applied_n = run(args.input, apply=True, limit=args.limit, allow_insert=args.allow_insert)
+        applied_n = run(
+            args.input,
+            apply=True,
+            limit=args.limit,
+            allow_insert=args.allow_insert,
+            project=args.project,
+            query=args.query,
+        )
+        notes = f"applied={applied_n} from {args.input.name}"
+        if args.project:
+            notes += f" | search_log: project={args.project}, query={args.query}"
         finish_run(
             run_id,
             rows_affected=applied_n,
-            notes=f"applied={applied_n} from {args.input.name}",
+            notes=notes,
         )
     except Exception as e:
         finish_run(run_id, rows_affected=0, notes=f"FAILED: {e}")
