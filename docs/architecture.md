@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-07-16 (tools: batch_epo_probe, compare_coverage; validation: GPP+IPF source coverage analysis)
+> Last updated: 2026-07-21 (Task M: 584 expert patent batch import, importer --project/--query for auto search_log)
 
 ---
 
@@ -106,7 +106,7 @@ graph TD
 | LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring; Supports reasoning models (GPT-5, o3) via _make_llm() — auto-detects temperature support and token budget. |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 | Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
-| Importer | `scripts/import_google_patents_jsonl.py` | One-off import of Google Patents fulltext from a JSONL artifact (scraped off-machine on Kaggle). Targets non-EP/WO rows in the artifact whose claims are currently empty. Only those rows are touched; EP/WO and EPO-populated rows are not overwritten. See Task I. |
+| Importer | `scripts/import_google_patents_jsonl.py` | Import Google Patents fulltext from JSONL artifacts (scraped off-machine on Kaggle). Targets non-EP/WO rows; EP/WO and EPO-populated rows are not overwritten. `--allow-insert` creates new DB rows for expert-identified patents not found by EPO search (Task L). `--project` auto-writes `search_log` entries so `backfill_snippets --project` can find them (Task M). See Task I/L/M. |
 | API Layer | `api/` | REST API (FastAPI + Docker). J-0: health check. J-1: DB lookup + stats. J-2: inspect (DB hit + EPO sandbox fallback). J-3: single-patent LLM scoring (dry-run + live). J-4: A/B rubric comparison. All logic ported inline — does not import `modules/` (D1). See `design_api_layer.md`. |
 
 ---
@@ -481,8 +481,12 @@ Tracked as Gap Analysis item.
 - `outputs/ground_truth/*.json` are evaluation artifacts — keep the first committed baseline, but do not re-commit every re-run (only metadata like timestamp / git_commit changes).
 - For non-EP fulltext (US/CN/KR/JP/EA), Google Patents supplement is
   available via `scripts/import_google_patents_jsonl.py`. The scraper
-  runs off-machine on Kaggle; JSONL artifact is gitignored. See
-  [Task I](spec/task_I_google_patents_jsonl_import.md).
+  runs off-machine on Kaggle; JSONL artifact is gitignored.
+  `--allow-insert` supports expert-identified patents not in DB (Task L);
+  `--project` + `--query` auto-writes search_log on import (Task M).
+  See [Task I](spec/task_I_google_patents_jsonl_import.md),
+  [Task L](spec/task_L_expert_patent_import.md),
+  [Task M](spec/task_M.md).
 
 ---
 
