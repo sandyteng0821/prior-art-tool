@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-07-21 (Task M: 584 expert patent batch import, importer --project/--query for auto search_log)
+> Last updated: 2026-07-23 (Task N: batch EPO fetch for 122 skip_jurisdiction EP/WO patents, IPF coverage 210→331/437)
 
 ---
 
@@ -14,7 +14,7 @@ Each phase has a distinct responsibility and a clear handoff to the next.
 > for the strategic context behind the formulation evidence subsystem
 > (snippet extraction, two-layer analysis, why not store full description).
 > 
-> 📄 **Active task specs:** See [`./spec/task_A.md`](./spec/task_A.md) through [`./spec/task_J5.md`](./spec/task_J5.md)
+> 📄 **Active task specs:** See [`./spec/task_A.md`](./spec/task_A.md) through [`./spec/task_N.md`](./spec/task_N.md)
 > for individual feature/fix specs. Task H is superseded by Task I (see note in task_H file).
 
 ---
@@ -487,6 +487,11 @@ Tracked as Gap Analysis item.
   See [Task I](spec/task_I_google_patents_jsonl_import.md),
   [Task L](spec/task_L_expert_patent_import.md),
   [Task M](spec/task_M.md).
+- For EP/WO patents skipped during JSONL import (`skip_jurisdiction`),
+  `scripts/batch_epo_fetch.py` reads the JSONL, identifies EP/WO IDs,
+  and calls `_get_or_fetch` to pull missing ones from EPO API.
+  One-time migration; uses `--dry-run` / `--apply` pattern.
+  See [Task N](spec/task_N.md).
 
 ---
 
