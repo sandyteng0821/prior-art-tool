@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-07-23 (Task N: batch EPO fetch for 122 skip_jurisdiction EP/WO patents, IPF coverage 210→331/437)
+> Last updated: 2026-07-27 (JSONL analysis path: analyze_jsonl bypasses Phase 1-3; inspect_jsonl + render_jsonl_report tooling)
 
 ---
 
@@ -107,6 +107,7 @@ graph TD
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 | Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
 | Importer | `scripts/import_google_patents_jsonl.py` | Import Google Patents fulltext from JSONL artifacts (scraped off-machine on Kaggle). Targets non-EP/WO rows; EP/WO and EPO-populated rows are not overwritten. `--allow-insert` creates new DB rows for expert-identified patents not found by EPO search (Task L). `--project` auto-writes `search_log` entries so `backfill_snippets --project` can find them (Task M). See Task I/L/M. |
+| JSONL Analyzer | `scripts/analyze_jsonl.py` | Google Patents scraper JSONL → Phase 4/5, bypassing Phase 1-3 and DB entirely. Reuses `analyze_patent()` / `save_results()` unchanged. Flags: `--use-llm`, `--rubric-override`, `--compare` (A/B), `--skip-screening` (Stage 2 only, mimics `/score`), `--limit`, `--dry-run`. Config swap with backup/restore (try/finally). |
 | API Layer | `api/` | REST API (FastAPI + Docker). J-0: health check. J-1: DB lookup + stats. J-2: inspect (DB hit + EPO sandbox fallback). J-3: single-patent LLM scoring (dry-run + live). J-4: A/B rubric comparison. All logic ported inline — does not import `modules/` (D1). See `design_api_layer.md`. |
 
 ---
@@ -492,6 +493,13 @@ Tracked as Gap Analysis item.
   and calls `_get_or_fetch` to pull missing ones from EPO API.
   One-time migration; uses `--dry-run` / `--apply` pattern.
   See [Task N](spec/task_N.md).
+- `scripts/analyze_jsonl.py` provides a DB-free analysis path: JSONL →
+  Phase 4 → Phase 5. Trades away family expansion, EPO-authoritative EP
+  claims, and filing-date-derived expiry; gains US/CN/JP/WO claims that
+  EPO OPS returns 404 for. Intended for one-off commissions and as a
+  cross-check against the EPO pipeline, not a replacement. Verified
+  against Will 6-patent set (US9415051B1 → Low: oral-only claims do not
+  read on inhaled target).
 
 ---
 
@@ -644,3 +652,42 @@ Compare Google Patents JSONL vs EPO probe JSONL coverage for the same patent set
 Run: `python3 tools/compare_coverage.py --gp data/global_patents_archive_IPF.jsonl --epo scratch/epo_probe_ipf.jsonl --mode all`
 
 Origin: GPP+IPF coverage analysis 2026-07-16. See `docs/validation/coverage_analysis_gpp_ipf_20260716.md`.
+
+### `tools/inspect_jsonl.py`
+
+Standalone data-quality check on Google Patents scraper JSONL, before
+feeding into `scripts/analyze_jsonl.py`.
+
+- Reads JSONL only — no DB, no API, no cost
+- Reports dirty/clean split, per-field coverage (title/abstract/claims/
+  full_text), jurisdiction breakdown, and the no-claims ID list
+- Dirty = scraper-level failure (title starts with "Not Found" / "Error",
+  or unparseable JSON). Distinct from a clean row with an empty field.
+
+Run: `python3 tools/inspect_jsonl.py data/global_patents_archive_EB_tiagabine_idlist_20260727.jsonl`
+
+Useful for:
+- Post-scrape sanity check before spending LLM budget
+- Identifying document types that systematically lack claims
+  (A3/A4/B8 supplementary search reports have no Google Patents page)
+
+First reference report: `docs/validation/jsonl_qc_summary_20260727.md`
+(4 batches: GPP, IPF, pioglitazone × EB, tiagabine × EB).
+
+### `tools/render_jsonl_report.py`
+
+Renders a JSONL artifact into a single self-contained HTML review page
+for domain experts.
+
+- One card per patent: ID, title, assignee, dates, abstract; claims and
+  full text collapsed by default
+- Client-side search (ID / title / abstract / assignee), jurisdiction
+  filter, hide-dirty toggle
+- Dirty rows included and flagged, not silently dropped (--clean-only
+  to exclude)
+- Zero dependencies — no server, no network, no install; open the file
+
+Run: `python3 tools/render_jsonl_report.py data/....jsonl -o reports/tiagabine_eb_review.html --title "Tiagabine × EB — Patent Review"`
+
+Complementary to `inspect_jsonl` (aggregate stats) — render_jsonl_report
+is the per-patent reading view.
