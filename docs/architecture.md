@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-07-27 (JSONL analysis path: analyze_jsonl bypasses Phase 1-3; inspect_jsonl + render_jsonl_report tooling)
+> Last updated: 2026-08-03 (tools: post_run_report)
 
 ---
 
@@ -691,3 +691,20 @@ Run: `python3 tools/render_jsonl_report.py data/....jsonl -o reports/tiagabine_e
 
 Complementary to `inspect_jsonl` (aggregate stats) — render_jsonl_report
 is the per-patent reading view.
+
+### `tools/post_run_report.py`
+
+Post-run analysis report for gap_analysis output (Excel/CSV).
+
+- §1 Overview: total patents, High/Medium/Low distribution, is_target_drug ratio
+- §2 High Risk Detail: per-patent reasoning, routes, expiry
+- §3 Medium Sample: top N reasoning quality check
+- §4 Data Quality: year/reasoning empty, claims missing signal, expiry coverage, status/jurisdiction distribution
+- §5 DB Cross-check: search_log count, claims coverage in DB (requires --project)
+- §6 Export: High+Medium subset to separate Excel (requires --export-review)
+
+Run: `python3 -m tools.post_run_report output/gap_analysis_XXXX.xlsx --project 'TARGET_PRODUCT_NAME'`
+
+Flags: --high-only, --medium-sample N, --export-review, --project.
+Read-only, zero DB mutation. Complements probe_coverage_v2 (data layer)
+with scoring-layer diagnostics.
