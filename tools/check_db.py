@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -31,6 +32,46 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 DB_PATH = Path(_project_root) / "cache" / "patents.db"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ID normalization (GPSS / Google Patents → pipeline format)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _normalize_patent_id(pid: str) -> str:
+    """Normalize patent ID from external sources to pipeline format.
+
+    GPSS (TIPO) zero-pads US granted patents: US09415051B1 → US9415051B1.
+    Pipeline convention: no zero-padding on the numeric part.
+    """
+    # US granted: US0*(\d+)(B\d) → strip leading zeros
+    m = re.match(r'^(US)0*(\d+)((?:A1|B\d))$', pid)
+    if m:
+        normalized = f"{m.group(1)}{m.group(2)}{m.group(3)}"
+        return normalized
+    return pid
+
+
+def _read_file(filepath: str) -> list[str]:
+    """Read patent IDs from file, trying UTF-8 then Big5 (GPSS exports)."""
+    p = Path(filepath)
+    for enc in ("utf-8-sig", "utf-8", "big5", "cp950", "latin-1"):
+        try:
+            text = p.read_text(encoding=enc)
+            lines = []
+            for line in text.splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    for part in line.replace(",", ";").split(";"):
+                        part = part.strip()
+                        if part:
+                            lines.append(part)
+            if lines:
+                return lines
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    print(f"[ERROR] Cannot decode file: {filepath}")
+    sys.exit(1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -162,14 +203,22 @@ def main():
         if not p.exists():
             print(f"[ERROR] File not found: {args.file}")
             sys.exit(1)
-        for line in p.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                # Support semicolon-separated lists (paste from EPO family)
-                for part in line.replace(",", ";").split(";"):
-                    part = part.strip()
-                    if part:
-                        ids.append(part)
+        ids = _read_file(args.file)
+
+    # ── Normalize IDs (GPSS zero-padding etc.) ────────────────────────────
+    normalized_map = {}  # normalized → original (only if changed)
+    clean_ids = []
+    for pid in ids:
+        norm = _normalize_patent_id(pid)
+        if norm != pid:
+            normalized_map[norm] = pid
+        clean_ids.append(norm)
+    ids = clean_ids
+
+    if normalized_map:
+        print(f"\n  ⚠  Normalized {len(normalized_map)} ID(s) from external format:")
+        for norm, orig in normalized_map.items():
+            print(f"     {orig} → {norm}")
 
     if not ids:
         parser.print_help()
