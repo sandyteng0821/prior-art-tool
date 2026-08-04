@@ -4,7 +4,7 @@
 > from real working sessions. Source of truth for how this repo is
 > developed and how the human + LLM collaboration is structured.
 >
-> Last updated: 2026-05-21
+> Last updated: 2026-08-04
 
 ---
 
@@ -99,6 +99,12 @@ Probe (5 min, run `_fetch_description` against test patents) revealed:
 
 **Rule:** Every `except` block should at minimum `print(f"[function] failed: {e}")`. Use `log.warning()` if a logger exists. Silent failures accumulate as ghost bugs.
 
+**Rule (extended, 2026-08-04 — Task O):** Printing is necessary but not
+sufficient. `_fetch_claims` satisfied the rule above and still produced
+silent data loss, because it cached the failure. A failure must not be
+written to the same persistence layer as a successful result. If failures
+are cached, permanent and transient causes must be distinguishable.
+
 ---
 
 ### 3.3 Don't merge inspect tools and migration scripts
@@ -150,13 +156,19 @@ Replaced with 5-line patch (Espacenet/Google Patents URL in inspect header) that
 
 ### 4.1 EPO OPS subscription does not include non-EP fulltext
 
-US, CN, EA, KR, JP, WO fulltext (`claims` and `description` endpoints) returns HTTP 404. This is a data licensing limit, **not a code bug**.
+US, CN, EA, KR, JP fulltext (`claims` and `description` endpoints) returns HTTP 404. This is a data licensing limit, **not a code bug**.
+
+**WO is NOT in this list** (corrected 2026-08-04, Task O). Probe measured
+WO claims 9/10 and description 10/10 (n=10, HS candidate set). Fulltext
+follows the *original publication*: an EP-A shell entering via PCT is
+empty while its WO sibling carries the text — which is why EP-A shows
+~31% claims coverage while WO shows ~90%. See `docs/spec/task_O.md`.
 
 Verified 2026-05 via probe matrix (5 model class variants × multiple patent types). No combination of `Epodoc / Docdb / Original` unlocks non-EP fulltext.
 
 **Implications:**
 
-- US/CN/EA/KR/WO patents in DB have empty `claims` and `examples_extracted`
+- US/CN/EA/KR/JP patents in DB have empty `claims` and `examples_extracted`
 - Snippet extraction for these patents relies entirely on `abstract`
 - Family expansion of EP-A1 to EP-B1 is the primary path to obtain granted-patent fulltext
 
@@ -310,6 +322,7 @@ Recorded for personal LLM-collaboration research dataset.
 | **Probe → spec-restructure (not reject)** | Task D | Pre-implementation probe (`scratch/probe_task_d.py`) showed Case 1 framing was wrong (4 IDs are `family_fetched=0` parents, not legacy members with NULL `family_of`), spec's Case 2 SQL had a precedence bug (71 spurious rows), and `family::*` diskcache invalidation was a no-op. Spec body preserved per §6; implementation collapsed Case 1 → Case 2 with a retrospective note explaining the corrections. Distinct from Task C ("spec error → user pushback → redirect", where the fix was a 1-keyword change) and the rejected Task E portion ("spec assumption collapse → reject", where the task was abandoned). Here the underlying need (backfill pre-May parents) was real and confirmed by probe (318 candidates DB-wide); only the spec's internal taxonomy was wrong. |
 | **Operation surfaces apparent bug → probe resolves in same session** | Task D execution → Bug Z (resolved) | During Task D backfill execution, `--null-count` revealed that the Apremilast project (first run 2026-05-21, post-Task-A) had 2 NULL `formulation_snippets` rows where spec said none should exist. User flagged this as potential scope creep before running apply. Two-track response: (a) Task D backfill still processed those rows for DB consistency, (b) `bug_Z_silent_null_snippets.md` opened to investigate. Subsequent inspector enhancement (`--null-provenance`) showed all 277 remaining NULL rows pre-date Task A merge (newest 2026-05-12, oldest 2026-03-23). Bug Z reclassified as historical artifact, file renamed `bug_Z_resolved.md`, no fix needed. Lesson: spec evolution should wait on probe data; the right discipline is `fetched_at`-bucketed audit before grepping code. |
 | **Investigation → tool creation → validation loop** | US9415051B1 scoring investigation → spec_debug_scoring.md → debug_scoring.py + check_db.py + test suite | Investigation revealed three-layer root cause (diskcache/screening/rubric). Rather than patching production code immediately, built diagnostic tools first (debug_scoring for judgment layer, check_db for data layer). Tools validated the root cause analysis (default rubric → Low, amended rubric → High) and provide reusable infrastructure for future scoring investigations. 58-check test suite committed alongside tools. Pattern: diagnose → build diagnostic tooling → validate diagnosis with tooling → then decide on production fix. |
+| **Probe for task A surfaces unrelated production bug** | HS feasibility probe → Task O | A probe written to answer "is WO fulltext available for the HS project" hit a ReadTimeout on one of ten patents, which exposed that all three cached fetch functions persisted failures indistinguishably from legitimate 404s. The HS question was answered (yes, WO works) and a blocking production bug was found in the same run. Distinct from "Tool reveals systemic bug" (`inspect_patent` → Bug X): there the tool was built for exploration and the bug was in data it displayed; here the bug was in the fetch path the probe itself exercised, and it was found because the probe deliberately kept exception detail that production code discarded. Lesson: probes that reimplement a production path rather than calling it can see failure modes the production path hides. |
 
 **Meta-observation:** LLM collaboration quality varies by *what kind of task it is*. Spec-driven implementation works well for additive features. Diagnosis-heavy work (bugs, edge cases) benefits from human-driven probe + LLM verification, not LLM-driven hypothesis generation.
 
