@@ -137,6 +137,55 @@ def _parse_patent_id(patent_id: str) -> tuple[str, str]:
     return patent_id, ""
 
 
+# ── Fetch failure classification（Task O）────────────────────────────────────
+
+_TRANSIENT_EXC_NAMES = frozenset({
+    "ReadTimeout", "ConnectTimeout", "Timeout", "ConnectionError",
+    "ChunkedEncodingError", "ProtocolError", "IncompleteRead",
+    "RemoteDisconnected", "SSLError",
+})
+
+
+def _classify_fetch_failure(exc: Exception) -> str:
+    """
+    'permanent' — HTTP 404. EPO doesn't license this fulltext, or the
+                  document doesn't exist. Won't change; safe to cache,
+                  and we must cache it (thousands of non-EP rows would
+                  otherwise be re-attempted every run — quota).
+    'transient' — everything else. Must NOT be cached.
+
+    Only 404 is treated as permanent. Unknown failures default to
+    transient: caching a failure we don't understand is exactly the bug
+    Task O fixes, and re-fetching is visible and recoverable while
+    poisoning is not.
+
+    Refs: docs/spec/task_O.md §Phase 1
+    """
+    resp = getattr(exc, "response", None)
+    code = getattr(resp, "status_code", None)
+    if isinstance(code, int):
+        return "permanent" if code == 404 else "transient"
+
+    if type(exc).__name__ in _TRANSIENT_EXC_NAMES:
+        return "transient"
+
+    # epo_ops surfaces some errors as plain exceptions carrying the status
+    # in the message; fetch_patents() already relies on this (`"404" in str(e)`).
+    return "permanent" if "404" in str(exc) else "transient"
+
+
+def _cache_result(cache_key: str, result: str, failure: Exception | None) -> None:
+    """
+    Single decision point for whether a fetch outcome may be cached.
+    Success and permanent failure: 30 days. Transient failure: not cached.
+    """
+    if failure is not None and _classify_fetch_failure(failure) == "transient":
+        print(f"  [cache] not caching transient failure for {cache_key}: "
+              f"{type(failure).__name__}")
+        return
+    cache.set(cache_key, result, expire=60 * 60 * 24 * 30)
+
+
 # ── Formulation snippet 切句 ─────────────────────────────────────────────────
 
 def _extract_formulation_snippets(text: str, drug_aliases: list[str]) -> list[str]:
@@ -559,7 +608,8 @@ def _fetch_abstract(patent_id: str) -> str:
     cache_key = f"abstract::{patent_id}"
     if cache_key in cache:
         return cache[cache_key]
-
+    
+    failure: Exception | None = None
     try:
         number, kind = _parse_patent_id(patent_id)
         resp = client.published_data(
@@ -591,10 +641,12 @@ def _fetch_abstract(patent_id: str) -> str:
         else:
             result = ""
 
-    except Exception:
+    except Exception as e:
+        print(f"  [_fetch_abstract] {patent_id} failed: {type(e).__name__}: {str(e)[:100]}")
         result = ""
+        failure = e
 
-    cache.set(cache_key, result, expire=60 * 60 * 24 * 30)
+    _cache_result(cache_key, result, failure)
     time.sleep(0.3)
     return result
 
@@ -604,6 +656,7 @@ def _fetch_claims(patent_id: str) -> str:
     if cache_key in cache:
         return cache[cache_key]
 
+    failure: Exception | None = None
     try:
         number, kind = _parse_patent_id(patent_id)
         resp = client.published_data(
@@ -648,8 +701,9 @@ def _fetch_claims(patent_id: str) -> str:
     except Exception as e:
         print(f"  [_fetch_claims] {patent_id} failed: {type(e).__name__}: {str(e)[:100]}")
         result = ""
+        failure = e
 
-    cache.set(cache_key, result, expire=60 * 60 * 24 * 30)
+    _cache_result(cache_key, result, failure)
     time.sleep(0.3)
     return result
 
@@ -659,6 +713,7 @@ def _fetch_title(patent_id: str) -> str:
     if cache_key in cache:
         return cache[cache_key]
 
+    failure: Exception | None = None
     try:
         number, kind = _parse_patent_id(patent_id)
         resp = client.published_data(
@@ -687,9 +742,11 @@ def _fetch_title(patent_id: str) -> str:
         else:
             result = str(titles)
 
-    except Exception:
+    except Exception as e:
+        print(f"  [_fetch_title] {patent_id} failed: {type(e).__name__}: {str(e)[:100]}")
         result = ""
+        failure = e
 
-    cache.set(cache_key, result, expire=60 * 60 * 24 * 30)
+    _cache_result(cache_key, result, failure)
     time.sleep(0.3)
     return result
