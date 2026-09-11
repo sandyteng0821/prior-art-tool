@@ -68,6 +68,56 @@ from pathlib import Path
 DIRTY_TITLE_PREFIXES = ("Not Found", "Error")
 SENTINEL_VALUES = {"N/A", "n/a", "N/a", ""}
 
+def _gpss_text(node) -> str:
+    """把 GPSS 巢狀文字節點抽成單一字串。str / list / dict 皆可,挖不到回空字串。"""
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        return node.strip()
+    if isinstance(node, list):
+        return "\n".join(_gpss_text(x) for x in node if x is not None).strip()
+    if isinstance(node, dict):
+        for key in ("claim-text", "p", "english-title", "#text", "$", "text"):
+            if key in node:
+                return _gpss_text(node[key])
+        if "claim" in node:
+            return _gpss_text(node["claim"])
+        return "\n".join(
+            _gpss_text(v) for k, v in node.items() if not str(k).startswith("@")
+        ).strip()
+    return str(node).strip()
+ 
+ 
+def _flatten_gpss_envelope(record: dict) -> dict:
+    """若 record 是 GPSS 封包,攤平成本 parser 預期的扁平欄位;否則原樣退回。
+ 
+    偵測:頂層 abstract/claims 是字串 → 非 GPSS(Google Patents),原樣退回。
+    沒有 records key → 非 GPSS 封包,原樣退回。
+    GPSS 封包 → 攤平 records[0]。空 records / verdict 非 ok → 回全空扁平
+    dict(交給既有 no-content 判斷 skip,不靜默吞掉)。
+    """
+    # Google Patents(扁平字串)→ 不碰,原樣退回同一物件
+    if isinstance(record.get("abstract"), str) or isinstance(record.get("claims"), str):
+        return record
+    # 非 GPSS 封包(無 records)→ 不碰
+    if "records" not in record:
+        return record
+ 
+    recs = record.get("records")
+    rid = record.get("requested_id", "")
+    if not isinstance(recs, list) or not recs or not isinstance(recs[0], dict):
+        return {"requested_id": rid, "title": "", "abstract": "",
+                "claims": "", "full_text": ""}
+ 
+    rec = recs[0]
+    return {
+        "requested_id":    rid,
+        "title":           _gpss_text(rec.get("patent-title")),
+        "abstract":        _gpss_text(rec.get("abstract")),
+        "claims":          _gpss_text(rec.get("claims")),
+        "full_text":       "",   # GPSS 封包無 description/full_text
+        "expiration_date": record.get("expiration_date", ""),
+    }
 
 def _is_dirty(record: dict) -> bool:
     """Skip dirty rows: 404s, errors, CSV pollution."""
@@ -129,6 +179,8 @@ def jsonl_to_patent_dicts(jsonl_path: str) -> list[dict]:
             except json.JSONDecodeError:
                 print(f"  [WARN] Line {line_num}: invalid JSON, skipped")
                 continue
+
+            record = _flatten_gpss_envelope(record)   # ← 新增這一行
 
             if _is_dirty(record):
                 skipped_dirty += 1
