@@ -15,3 +15,4 @@ backfill_final.pid
 global_patents_archive.jsonl
 global_patents_optimized.csv
 data/
+gpss-probe/.env
