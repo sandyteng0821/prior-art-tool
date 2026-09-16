@@ -100,18 +100,23 @@ CANARY_PN = "US09415051B1"
 # ══════════════════════════════════════════════════════════════════════════════
 # 專利號解析與變體
 # ══════════════════════════════════════════════════════════════════════════════
+# series letter：TW 公告號的類型字母（I=發明 / M=新型 / D=設計），澳門用 J。
+# 是號碼本體的一部分，不是可脫的 kind code —— 一律接受、絕不脫。
+# 刻意限定 IMDJ 四個字母，放寬成 [A-Z] 會開始誤收 garbage。
+_SERIES = "IMDJ"
 
-ID_RE = re.compile(r"^(?P<cc>[A-Z]{2})(?P<era>[HS])?(?P<num>\d+)(?P<kind>[A-Z]\d?)?$")
+ID_RE = re.compile(
+    rf"^(?P<cc>[A-Z]{{2}})(?P<era>[HS])?(?P<series>[{_SERIES}])?(?P<num>\d+)(?P<kind>[A-Z]\d?)?$")
 
 # 看起來像專利號的 token（用來從 TSV 裡挑欄位）
-LOOKS_LIKE_ID = re.compile(r"^[A-Z]{2}[HS]?\d{4,}[A-Z]?\d?$")
+LOOKS_LIKE_ID = re.compile(rf"^[A-Z]{{2}}[HS]?[{_SERIES}]?\d{{4,}}[A-Z]?\d?$")
 
 
 def parse_id(pid: str) -> dict | None:
     m = ID_RE.match(pid.strip().upper())
     if not m:
         return None
-    return {k: (m.group(k) or "") for k in ("cc", "era", "num", "kind")}
+    return {k: (m.group(k) or "") for k in ("cc", "era", "series", "num", "kind")}
 
 
 def variants(pid: str, *, try_no_kind: bool = False) -> list[str]:
@@ -129,11 +134,11 @@ def variants(pid: str, *, try_no_kind: bool = False) -> list[str]:
     if not p:
         return [pid]
 
-    cc, era, num, kind = p["cc"], p["era"], p["num"], p["kind"]
+    cc, era, series, num, kind = p["cc"], p["era"], p["series"], p["num"], p["kind"]
     out: list[str] = [pid]
 
-    def add(num_: str, era_: str = era, kind_: str = kind) -> None:
-        v = f"{cc}{era_}{num_}{kind_}"
+    def add(num_: str, era_: str = era, series_: str = series, kind_: str = kind) -> None:
+        v = f"{cc}{era_}{series_}{num_}{kind_}"
         if v not in out:
             out.append(v)
 
