@@ -228,8 +228,11 @@ def loads_lenient(raw: str, *, max_fixes: int = 64) -> tuple[dict, list[dict]]:
     GPSS 端序列化 bug，不是傳輸損壞。US/WO/AU 案沒有 f-term 欄位不會觸發，
     所以先前只用 expFld=PN 的探針從未撞到。
 
-    安全前提（已驗證）：GPSS 回應不含裸控制字元，
-        sum(1 for c in raw if ord(c) < 0x20 and c not in "\r\n\t") == 0
+    安全前提（部分失效，2026-09-17）：原假設「GPSS 回應不含裸控制字元」對
+    多數案成立，但已知例外——當值結尾為裸反斜線接引號（\"）時，字串未閉合，
+    後續換行會落進字串內部觸發 control character 錯誤。這種語法歧義純清洗
+    無法可靠修復，該筆放棄（WO2007025575A1、WO2008046084A2）。缺逗號修補
+    的位置安全性對「能成功解析」的案仍成立。
     因此每個真換行都落在 token 之間而非 JSON 字串內部，
     JSONDecodeError.pos 指向的位置可以安全插入逗號而不會改到內容。
 
@@ -239,6 +242,31 @@ def loads_lenient(raw: str, *, max_fixes: int = 64) -> tuple[dict, list[dict]]:
     回傳 (data, fixes)。fixes 記錄修補點，供日後追蹤 GPSS 是否修好。
     """
     text, fixes = raw, []
+
+    # ── 裸反斜線預清洗（2026-09-17 新增）────────────────────────────────
+    # GPSS 資料混入 Windows 路徑（C:\...\DAR\4665661_.DOC），\D \4 是裸反斜線。
+    # JSON 只允許 \" \\ \/ \b \f \n \r \t \uXXXX。白名單式：只把「\ 後面非合法
+    # 跳脫字元」的那個 \ 補成 \\，不動合法跳脫。
+    # 侷限：若裸反斜線剛好在字串「結尾」接 "（值以 \ 收尾 → \"），與跳脫引號
+    # 在字元層面無法區分，此規則放行 → 該筆 fallthrough 成 response_error。
+    # 已知放棄案例 2 筆：WO2007025575A1、WO2008046084A2（內容皆 OCR 化學式亂碼）。
+    # 實測 IPF：救回 9/11（8 筆完整、1 筆 AU2012241083A1 能解析但內容為路徑亂碼）。
+    if '\\' in raw:
+        _LEGAL = set('"\\/bfnrtu')
+        buf = []; i = 0; L = len(raw); n_fixed = 0
+        while i < L:
+            ch = raw[i]
+            if ch == '\\' and i + 1 < L and raw[i+1] in _LEGAL:
+                buf.append(ch); buf.append(raw[i+1]); i += 2
+            elif ch == '\\':
+                buf.append('\\\\'); i += 1; n_fixed += 1
+            else:
+                buf.append(ch); i += 1
+        if n_fixed:
+            text = ''.join(buf)
+            fixes.append({"fix": "stray_backslash", "count": n_fixed,
+                          "missing_before": f"stray_backslash×{n_fixed}"})
+
     for _ in range(max_fixes):
         try:
             return json.loads(text), fixes
