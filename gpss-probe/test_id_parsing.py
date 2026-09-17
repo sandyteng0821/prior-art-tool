@@ -115,6 +115,9 @@ REAL_MOJ = ["MOJ001158C", "MOJ002704C", "MOJ001108C",
 MUST_PASS = REAL_TWI + REAL_MOJ + [
     "TWM604140U", "TWD214823S", "USD801033S",  # 新型 / 設計（含美國設計）
     "TWI221587", "MOJ001158",                  # 無 kind code
+    # 兩字母型別標記（US reissue / BR invention / MT）
+    "USRE49686E1", "BRPI0911464A2", "BRPI0710232B8", "BRPI0719166A2",
+    "BRPI0719857A2", "BRPI0807351A2", "MTP30210B", "MTP30208B", "MTP32753B",
 ]
 
 # 既有格式：改動後必須 (a) 仍能 parse (b) parse 結果與「無 series 群組」時相同。
@@ -131,6 +134,7 @@ MUST_REJECT = [
     "PIOGLITAZONE", "drug composition", "see note 3",
     "A12", "ABC123", "US", "TWI", "1234567",
     "COMPOSITION", "", "   ",
+    "REDUCE99999", "PICKLE2024",   # RE/PI 開頭假詞：series 後非數字，須拒
 ]
 
 # variants 不得把 TWI…/MOJ… 變成裸 TW…/MO…（跨 namespace = N1 已驗證的不同專利）
