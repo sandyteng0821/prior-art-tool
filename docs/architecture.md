@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-08-03 (tools: post_run_report)
+> Last updated: 2026-09-22 (llm_analyzer: rebuild_analysis_chain prompt override)
 
 ---
 
@@ -103,7 +103,7 @@ graph TD
 | Query Builder | `modules/query_builder.py` | Generate EPO CQL search strings (Strategy A, D, + CUSTOM_QUERIES) |
 | Patent Fetcher | `modules/patent_fetcher.py` | Call EPO OPS API, paginate, parse examples, extract formulation snippets, auto-upgrade A1→B1, expand family (cross-jurisdiction A-series included) |
 | Patent Store | `modules/patent_store.py` | SQLite local cache; family tracking; formulation snippet storage; cross-project persistent store |
-| LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring; Supports reasoning models (GPT-5, o3) via _make_llm() — auto-detects temperature support and token budget. |
+| LLM Analyzer | `modules/llm_analyzer.py` | Rule-based or two-stage LLM FTO scoring; Supports reasoning models (GPT-5, o3) via _make_llm() — auto-detects temperature support and token budget. Prompt override via `rebuild_analysis_chain(system_prompt)`; human template is single-sourced in `ANALYSIS_HUMAN_TEMPLATE`. |
 | Output Writer | `modules/output_writer.py` | Sort, filter, write CSV + color-coded Excel |
 | Inspect Tool | `tools/inspect_patent.py` | On-demand patent inspection: read DB + re-run snippet extraction with custom aliases/keywords, EPO fallback on miss (sandbox, no persist) |
 | Importer | `scripts/import_google_patents_jsonl.py` | Import Google Patents fulltext from JSONL artifacts (scraped off-machine on Kaggle). Targets non-EP/WO rows; EP/WO and EPO-populated rows are not overwritten. `--allow-insert` creates new DB rows for expert-identified patents not found by EPO search (Task L). `--project` auto-writes `search_log` entries so `backfill_snippets --project` can find them (Task M). See Task I/L/M. |
@@ -475,10 +475,13 @@ Tracked as Gap Analysis item.
 - Re-running `main.py` is safe — patents already in `patents.db` take the `[DB hit]` path.
 - Claims text truncated at `CLAIMS_MAX_CHARS` (default 3000) — adjust in `config.py`.
 - `configs/` directory contains per-project config snapshots. `config.py` is always the active config.
-- `configs/rubrics/` directory contains rubric override files for A/B testing
-  ANALYSIS_SYSTEM prompts. Files use `{TARGET_DRUG}`, `{TARGET_ROUTE}`,
+- `configs/rubrics/` directory contains rubric override files for the
+  ANALYSIS_SYSTEM prompt. Files use `{TARGET_DRUG}`, `{TARGET_ROUTE}`,
   `{TARGET_INDICATION}` placeholders, interpolated at runtime from the
-  specified `--config`.
+  active config: `analyze_jsonl.py --rubric-override` / `--compare` (from
+  the `--config` it loads) and `main.py --rubric-override` (from the active
+  `config.py`). main.py routes through `llm_analyzer.rebuild_analysis_chain`;
+  analyze_jsonl still uses its own in-module patch.
 - `outputs/ground_truth/*.json` are evaluation artifacts — keep the first committed baseline, but do not re-commit every re-run (only metadata like timestamp / git_commit changes).
 - For non-EP fulltext (US/CN/KR/JP/EA), Google Patents supplement is
   available via `scripts/import_google_patents_jsonl.py`. The scraper
