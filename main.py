@@ -1,6 +1,7 @@
 # main.py
 # Pipeline 入口：串接四個 module，執行完整 prior art 搜尋流程
 
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from modules.query_builder import build_queries
 from modules.patent_fetcher import fetch_patents
@@ -9,7 +10,30 @@ from modules.output_writer  import save_results, print_summary
 from config import MAX_WORKERS
 
 
-def run_pipeline():
+def _load_rubric(rubric_path: str) -> str:
+    """讀 rubric 檔並展開 {TARGET_*} 佔位。
+
+    NOTE: 這份 loader 與 analyze_jsonl._load_rubric 幾乎相同（暫時重複）。
+    Task Q #4 會抽到 modules/ 共用並消除此重複。此處刻意用純字串 .replace
+    （非 str.format），與 analyze_jsonl 一致——rubric 內其他 {} 不應被當佔位。
+    """
+    from config import TARGET_DRUG, TARGET_ROUTE, TARGET_INDICATION
+    text = Path(rubric_path).read_text(encoding="utf-8")
+    text = text.replace("{TARGET_DRUG}", TARGET_DRUG)
+    text = text.replace("{TARGET_ROUTE}", TARGET_ROUTE)
+    text = text.replace("{TARGET_INDICATION}", TARGET_INDICATION)
+    return text
+
+
+def run_pipeline(rubric_path: str | None = None):
+    # ── Step 0：prompt 抽換（若指定 rubric）─────────────────────────────────────
+    # 必須在 executor.submit 之前 rebuild：rebuild_analysis_chain 改的是
+    # module-level global analysis_chain，先 rebuild 再 submit 才無語意 race。
+    if rubric_path:
+        from modules.llm_analyzer import rebuild_analysis_chain
+        rebuild_analysis_chain(_load_rubric(rubric_path))
+        print(f"[0/4] 已套用 rubric override：{rubric_path}")
+
     # ── Step 1：產生搜尋字串 ──────────────────────────────────────────────────
     queries = build_queries()
     print(f"[1/4] 產生 {len(queries)} 組搜尋字串")
@@ -53,4 +77,25 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    import argparse
+    from config import USE_LLM
+
+    parser = argparse.ArgumentParser(
+        description="Prior art pipeline: EPO OPS → analyze → CSV/Excel.",
+        prog="python3 main.py",
+    )
+    parser.add_argument(
+        "--rubric-override", type=str, metavar="FILE", default=None,
+        help="用此檔內容取代 ANALYSIS_SYSTEM prompt（隱含 USE_LLM=True）。"
+             "支援 {TARGET_DRUG}, {TARGET_ROUTE}, {TARGET_INDICATION} 佔位。",
+    )
+    args = parser.parse_args()
+
+    # --rubric-override 隱含 USE_LLM=True；rule mode 傳此 flag 應 fail fast。
+    if args.rubric_override and not USE_LLM:
+        parser.error(
+            "--rubric-override 需要 USE_LLM=True（rule mode 無 prompt 可換）。"
+            "請在 config.py 設定 USE_LLM=True 後再跑。"
+        )
+
+    run_pipeline(rubric_path=args.rubric_override)
