@@ -124,9 +124,15 @@ screening_prompt = ChatPromptTemplate.from_messages([
     ("human", "標題：{title}\n\n摘要：{abstract}"),
 ])
 
+# human template 單一來源（供 analysis_prompt 與 rebuild_analysis_chain 共用，
+# 也取代 analyze_jsonl._patch_analysis_chain 裡重抄的那份 → 消漂移）
+ANALYSIS_HUMAN_TEMPLATE = (
+    "標題：{title}\n\n摘要：{abstract}\n\n請求項：{claims}\n\n法律狀態：{status}"
+)
+
 analysis_prompt = ChatPromptTemplate.from_messages([
     ("system", ANALYSIS_SYSTEM),
-    ("human", "標題：{title}\n\n摘要：{abstract}\n\n請求項：{claims}\n\n法律狀態：{status}"),
+    ("human", ANALYSIS_HUMAN_TEMPLATE),
 ])
 
 # ── Chains（只在 USE_LLM=True 時初始化，避免沒有 API key 時 crash） ──────────
@@ -151,6 +157,25 @@ if USE_LLM:
     analysis_llm  = _make_llm(ANALYSIS_MODEL, "analysis")
     screening_chain = screening_prompt | screening_llm.with_structured_output(ScreeningResult)
     analysis_chain  = analysis_prompt  | analysis_llm.with_structured_output(PatentAnalysis)
+
+
+def rebuild_analysis_chain(system_prompt: str) -> None:
+    """用新 system prompt 重建 analysis_chain（prompt 抽換的唯一接口）。
+
+    human template 仍用 ANALYSIS_HUMAN_TEMPLATE 單一來源。
+    main.py 與 analyze_jsonl 共用此接口 → 兩路 prompt 一致由架構保證。
+    """
+    global analysis_chain
+    if not USE_LLM:
+        raise RuntimeError(
+            "rebuild_analysis_chain 需要 USE_LLM=True（rule mode 無 prompt 可換）"
+        )
+    patched = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", ANALYSIS_HUMAN_TEMPLATE),
+    ])
+    analysis_chain = patched | analysis_llm.with_structured_output(PatentAnalysis)
+
 
 # ── Helper functions (for API call retry) 
 def invoke_with_retry(chain, payload):
