@@ -1,7 +1,7 @@
 # Prior Art Tool — System Architecture
 
 > Drug Repurposing Patent Analyzer · Current State
-> Last updated: 2026-09-22 (llm_analyzer: rebuild_analysis_chain prompt override)
+> Last updated: 2026-09-23 (rubric: shared loader across main.py + analyze_jsonl)
 
 ---
 
@@ -480,8 +480,9 @@ Tracked as Gap Analysis item.
   `{TARGET_INDICATION}` placeholders, interpolated at runtime from the
   active config: `analyze_jsonl.py --rubric-override` / `--compare` (from
   the `--config` it loads) and `main.py --rubric-override` (from the active
-  `config.py`). main.py routes through `llm_analyzer.rebuild_analysis_chain`;
-  analyze_jsonl still uses its own in-module patch.
+  `config.py`). Both paths load rubrics via `modules/rubric.load_rubric`
+  and swap the prompt via `llm_analyzer.rebuild_analysis_chain`; the human
+  template is single-sourced in `ANALYSIS_HUMAN_TEMPLATE`.
 - `outputs/ground_truth/*.json` are evaluation artifacts — keep the first committed baseline, but do not re-commit every re-run (only metadata like timestamp / git_commit changes).
 - For non-EP fulltext (US/CN/KR/JP/EA), Google Patents supplement is
   available via `scripts/import_google_patents_jsonl.py`. The scraper
