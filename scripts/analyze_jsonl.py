@@ -413,33 +413,11 @@ def main():
 
         from modules.output_writer import save_results, print_summary
 
-        # ── Rubric loading helper ─────────────────────────────────────────
-        def _load_rubric(rubric_path: str) -> str:
-            """Load rubric file and expand {TARGET_*} placeholders."""
-            text = Path(rubric_path).read_text(encoding="utf-8")
-            text = text.replace("{TARGET_DRUG}", cfg.TARGET_DRUG)
-            text = text.replace("{TARGET_ROUTE}", cfg.TARGET_ROUTE)
-            text = text.replace("{TARGET_INDICATION}", cfg.TARGET_INDICATION)
-            return text
-
-        def _patch_analysis_chain(rubric_text: str):
-            """
-            Monkey-patch llm_analyzer's analysis_chain with a custom rubric.
-            Must be called AFTER importing llm_analyzer.
-            """
-            import modules.llm_analyzer as _analyzer
-            from langchain_core.prompts import ChatPromptTemplate
-
-            patched_prompt = ChatPromptTemplate.from_messages([
-                ("system", rubric_text),
-                ("human", "標題：{title}\n\n摘要：{abstract}\n\n請求項：{claims}\n\n法律狀態：{status}"),
-            ])
-            _analyzer.analysis_chain = patched_prompt | _analyzer.analysis_llm.with_structured_output(
-                _analyzer.PatentAnalysis
-            )
+        # ── Rubric loading + prompt override (shared with main.py) ────────
+        from modules.rubric import load_rubric
 
         # ── Import analyzer ───────────────────────────────────────────────
-        from modules.llm_analyzer import analyze_patent
+        from modules.llm_analyzer import analyze_patent, rebuild_analysis_chain
         import modules.llm_analyzer as _analyzer_mod
 
         # ── Skip-screening: bypass Stage 1, all patents go to Stage 2 ────
@@ -509,8 +487,8 @@ def main():
             # Run B: override rubric
             print()
             print("  ── Run [B]: Override rubric ───────────────────────────────")
-            rubric_b = _load_rubric(args.compare)
-            _patch_analysis_chain(rubric_b)
+            rubric_b = load_rubric(args.compare, cfg)
+            rebuild_analysis_chain(rubric_b)
             results_b = _run_batch("B")
 
             # ── Step 4: Output both ───────────────────────────────────────
@@ -547,8 +525,8 @@ def main():
             mode_label = "LLM" if args.use_llm else "Rule"
             if args.rubric_override:
                 mode_label = "LLM (rubric override)"
-                rubric_text = _load_rubric(args.rubric_override)
-                _patch_analysis_chain(rubric_text)
+                rubric_text = load_rubric(args.rubric_override, cfg)
+                rebuild_analysis_chain(rubric_text)
                 print(f"── Step 3: Analyze ({mode_label}) ─────────────────────────")
                 print(f"  Rubric: {args.rubric_override} ({len(rubric_text)} chars)")
             else:
