@@ -1,8 +1,36 @@
 # Task Q — Prompt 抽換 + EPO baseline 分析路徑（經 JSONL 導出）
 
-> 存檔備查。實作過程中的微調紀錄在對應的 chat 對話裡。
-> 前置條件：無（#1 是地基，其餘依賴 #1）。截斷 bug 根因待 grep（見 Non-Goals）。
-> 完成後請更新 `docs/architecture.md`。
+**Status:** ✅ Completed (2026-09-23)
+
+> Retrospective note — written after execution.
+> 實作 commits: cefc81b (#1) · 4c55b81 (#2) · d840fc8 (#3) · cfc7321 (#4)
+>
+> **1. #3 前綴 shape（spec 假設崩）：** spec 草稿 `project_full[:30]` 匹配不到。
+> DB `search_log.project` 存的是 `[:30].replace(" ","_")`（patent_fetcher.py:37
+> 寫入端）。蟹足腫實際值 `'Empagliflozin_外用製劑治療蟹足腫_(Keloi'`。實作前綴
+> 複製寫入端 transform：`project_full[:30].replace(" ","_")`。
+>
+> **2. #3 筆數算術（spec 漏算重疊）：** spec「277+203=480」。probe 實證：種子 277
+> + family 209 − 重疊 6 = 480（spec 的 203 是淨增數 209−6）。collect_ids 回
+> (seeds, family)，union 去重自動處理，導出正好 480。IPF 亦驗證：704+991−31=1664。
+>
+> **3. #2 現狀（spec 假設 vs 實際）：** main.py 原本無 argparse，#2 從零加 CLI。
+> `load_rubric` 在 #4 才定義，故 #2 嚴格依賴 #4。實作走 spec 字面順序：#2 內嵌
+> 5 行 loader（.replace，非 .format）當暫時債，#4 抽 modules/rubric 共用後消除。
+> rule mode fail fast 在 CLI 階段 parser.error（exit 2）。
+>
+> **4. #3 導出揭露（非 defect）：** 蟹足腫導出 480，analyze_jsonl 讀進 475，
+> 砍 5 筆三欄全空：CN201055475Y / CN220175599U / KR102100163B1 / MXPA05007566A /
+> UA57819U，皆 search_log 種子（family_of=None），命中 EPO 非 EP biblio 404 限制。
+> 導出工具唯讀忠實反映 DB，非缺陷。附帶：architecture Coverage 表稱「search inline
+> biblio, production unaffected」，這 5 筆是反例（若追 search biblio 完整性另開 ticket）。
+>
+> **5. rubric 展開語法不一致（未收斂）：** #4 的 modules/rubric.load_rubric 用
+> .replace 涵蓋 main.py + analyze_jsonl 兩路。但 debug_scoring 用 .format（Approach D,
+> 不 import llm_analyzer，不在 Q scope）。目前兩套語法，三工具統一另開 ticket。
+>
+> **未做（spec 允許）：** tests/test_prompt_consistency.py（#1 prompt 同源已 REPL 驗，
+> 固化待補）；baseline 篩選工具；截斷根因修復（已 grep 確認 patent_fetcher.py:37）。
 
 ---
 
