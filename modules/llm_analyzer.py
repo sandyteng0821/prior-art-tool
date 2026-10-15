@@ -150,7 +150,7 @@ def _make_llm(model: str, role: str):
 
     if is_reasoning:
         return ChatOpenAI(model=model, max_tokens=max_tokens)
-    return ChatOpenAI(model=model, temperature=0, max_tokens=max_tokens)
+    return ChatOpenAI(model=model, temperature=0, max_tokens=max_tokens, model_kwargs={"seed": 42, "top_p": 0})
 
 if USE_LLM:
     screening_llm = _make_llm(SCREENING_MODEL, "screening")
